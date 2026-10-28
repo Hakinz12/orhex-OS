@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment Variables & Secrets (CRITICAL: Never commit credentials)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+
+# Next.js Build Outputs
+apps/web/.next/
+apps/web/out/
+apps/web/build/
+.next/
+out/
+build/
+dist/
+
+# Databases & Local Storage
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE & OS Artifacts
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
