@@ -3,11 +3,13 @@ import pytest
 from app.adapters.llm.gemini import GeminiAdapter
 from app.adapters.walrus.memwal import MemWalAdapter
 from app.adapters.tatum.sui_rpc import TatumSuiAdapter
+from app.core.config import settings
 
 
 @pytest.mark.asyncio
-async def test_gemini_adapter_unconfigured_behavior():
+async def test_gemini_adapter_unconfigured_behavior(monkeypatch):
     """Verify Gemini adapter handles missing credentials safely without throwing exceptions."""
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "environment-key-is-not-used")
     adapter = GeminiAdapter(api_key="")
     readiness = await adapter.check_readiness()
     assert readiness["status"] == "unconfigured"
@@ -24,25 +26,32 @@ async def test_gemini_adapter_unconfigured_behavior():
 @pytest.mark.asyncio
 async def test_walrus_adapter_unconfigured_behavior():
     """Verify Walrus adapter handles missing credentials and reports unconfigured."""
-    adapter = MemWalAdapter(agent_id="", private_key="")
+    adapter = MemWalAdapter(agent_id="", private_key="", account_id="")
     readiness = await adapter.check_readiness()
     assert readiness["configured"] is False
     assert readiness["agent_id"] == "not_set"
 
-    # Memory persistence must fail safely if agent_id is missing
+    # Memory persistence must fail safely if delegated credentials are missing.
     result = await adapter.remember(namespace="test_ns", text="Test memory")
     assert result["status"] == "failed"
-    assert "MEMWAL_AGENT_ID" in result["error"]
+    assert "MEMWAL_PRIVATE_KEY" in result["error"]
 
 
 @pytest.mark.asyncio
-async def test_tatum_sui_adapter_unconfigured_behavior():
-    """Verify Tatum adapter initializes safely and formats query structure."""
+async def test_tatum_sui_adapter_unconfigured_behavior(monkeypatch):
+    """Verify unconfigured readiness without allowing any HTTP client creation."""
+    monkeypatch.setattr(settings, "TATUM_API_KEY", "")
+
+    def fail_on_http_request(*args, **kwargs):
+        raise AssertionError("Unconfigured Tatum adapter attempted an HTTP request")
+
+    monkeypatch.setattr(
+        "app.adapters.tatum.sui_rpc.httpx.AsyncClient",
+        fail_on_http_request,
+    )
     adapter = TatumSuiAdapter(api_key="", rpc_url="https://sui-mainnet.gateway.tatum.io")
     assert adapter.network == "mainnet"
 
-    # Balance query with invalid address / unconfigured state should gracefully report fallback
-    balance_res = await adapter.get_balance("0x0000000000000000000000000000000000000000000000000000000000000000")
-    assert balance_res["sui_address"] == "0x0000000000000000000000000000000000000000000000000000000000000000"
-    assert "total_balance_sui" in balance_res
-
+    readiness = await adapter.check_readiness()
+    assert readiness["configured"] is False
+    assert readiness["status"] == "unconfigured"

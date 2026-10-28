@@ -1,7 +1,19 @@
 """SQLAlchemy ORM Domain Models for ORHREX OS."""
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Integer, Float, Boolean, DateTime, Text, ForeignKey
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    func,
+    Index,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 
@@ -28,6 +40,29 @@ class User(Base):
     goals = relationship("Goal", back_populates="user", cascade="all, delete-orphan")
     commitments = relationship("Commitment", back_populates="user", cascade="all, delete-orphan")
     memories = relationship("MemorySyncRecord", back_populates="user", cascade="all, delete-orphan")
+    access_tokens = relationship(
+        "UserAccessToken",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+
+class UserAccessToken(Base):
+    """Revocable opaque API credential; the bearer value itself is never persisted."""
+    __tablename__ = "user_access_tokens"
+    __table_args__ = (
+        Index("ix_user_access_tokens_user_id", "user_id"),
+        Index("ix_user_access_tokens_expires_at", "expires_at"),
+    )
+
+    id = Column(String(64), primary_key=True, default=generate_uuid)
+    user_id = Column(String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token_digest = Column(String(64), nullable=False, unique=True, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+
+    user = relationship("User", back_populates="access_tokens")
 
 
 class Goal(Base):
@@ -65,22 +100,62 @@ class Commitment(Base):
 
 class MemorySyncRecord(Base):
     """
-    Tracks local application synchronization with Walrus Memory Mainnet.
-    Walrus holds durable semantic blobs; this table stores application metadata,
-    reconciliation states, and confirmation timestamps.
+    Durable local operation record for a memory write to Walrus.
+
+    Walrus stores text and namespace; application metadata and ownership remain
+    in this local record.
     """
     __tablename__ = "memory_sync_records"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'confirmed', 'failed', "
+            "'reconciliation_required')",
+            name="ck_memory_sync_records_status",
+        ),
+        Index(
+            "uq_memory_sync_records_user_idempotency",
+            "user_id",
+            "idempotency_key",
+            unique=True,
+        ),
+        Index("ix_memory_sync_records_user_status", "user_id", "status"),
+    )
 
     id = Column(String(64), primary_key=True, default=generate_uuid)
     user_id = Column(String(64), ForeignKey("users.id"), nullable=False, index=True)
+    namespace = Column(
+        String(128),
+        nullable=False,
+        default="orhrex-personal-memory",
+        server_default="orhrex-personal-memory",
+        index=True,
+    )
+    idempotency_key = Column(
+        String(64),
+        nullable=False,
+        default=generate_uuid,
+        server_default="",
+    )
     walrus_blob_id = Column(String(256), nullable=True, index=True)
+    walrus_memory_id = Column(String(256), nullable=True)
+    walrus_job_id = Column(String(256), nullable=True)
     text = Column(Text, nullable=False)
     category = Column(String(64), default="personal")  # personal, goals, commitments, work
     memory_type = Column(String(64), default="semantic")  # semantic, episodic, procedural
-    status = Column(String(32), default="queued")  # draft, queued, confirmed, failed
+    metadata_json = Column(Text, nullable=False, default="{}", server_default="{}")
+    status = Column(String(32), nullable=False, default="pending", server_default="pending")
+    last_error = Column(Text, nullable=True)
     confidence = Column(Float, default=1.0)
     source = Column(String(64), default="user_confirmed")
     created_at = Column(DateTime(timezone=True), default=utc_now)
+    attempted_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.now(),
+    )
     confirmed_at = Column(DateTime(timezone=True), nullable=True)
 
     user = relationship("User", back_populates="memories")

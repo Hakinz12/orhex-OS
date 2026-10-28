@@ -11,7 +11,7 @@ class BaseWalrusMemory(ABC):
 
     @abstractmethod
     async def check_readiness(self) -> Dict[str, Any]:
-        """Verify Walrus endpoint liveness and agent credentials."""
+        """Verify Walrus endpoint liveness and delegated credentials."""
         pass
 
     @abstractmethod
@@ -21,11 +21,12 @@ class BaseWalrusMemory(ABC):
         text: str,
         category: str = "personal",
         memory_type: str = "semantic",
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Store a verified atomic memory blob in Walrus storage.
-        Returns dictionary with status ('queued' or 'confirmed'), blob_id, and timestamp.
+        Returns a status dictionary, including a blob ID when confirmed.
         """
         pass
 
@@ -43,11 +44,15 @@ class BaseWalrusMemory(ABC):
 
     @abstractmethod
     async def get_blob_status(self, blob_id: str) -> Dict[str, Any]:
-        """Verify persistence confirmation of a stored Walrus blob ID."""
+        """Check blob status, or explicitly report when this operation is unsupported."""
+        pass
+
+    @abstractmethod
+    async def get_remember_status(self, job_id: str) -> Dict[str, Any]:
+        """Check an accepted write job to reconcile an uncertain operation."""
         pass
 
     @abstractmethod
     async def delete_memory(self, namespace: str, memory_id: str) -> Dict[str, Any]:
-        """Mark or delete a memory within Walrus supported lifecycle."""
+        """Delete a memory, or explicitly report when this operation is unsupported."""
         pass
-

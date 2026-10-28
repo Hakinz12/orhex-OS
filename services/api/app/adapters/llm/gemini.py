@@ -16,8 +16,8 @@ class GeminiAdapter(BaseLLMAdapter):
     """
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
-        self.api_key = api_key or settings.GEMINI_API_KEY
-        self.model = model or settings.GEMINI_MODEL
+        self.api_key = settings.GEMINI_API_KEY if api_key is None else api_key
+        self.model = settings.GEMINI_MODEL if model is None else model
         self.base_url = "https://generativelanguage.googleapis.com/v1beta/models"
 
     async def check_readiness(self) -> Dict[str, Any]:
@@ -166,4 +166,3 @@ class GeminiAdapter(BaseLLMAdapter):
         except Exception as e:
             logger.error(f"Gemini extract_candidate_memories error: {e}")
         return []
-
