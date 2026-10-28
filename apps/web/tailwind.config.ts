@@ -13,32 +13,28 @@ const config: Config = {
         background: "var(--background)",
         foreground: "var(--foreground)",
         surface: {
-          50: "#f8fafc",
-          100: "#f1f5f9",
-          800: "#1e293b",
-          900: "#0f172a",
-          950: "#020617"
+          DEFAULT: "var(--surface)",
+          raised: "var(--surface-raised)",
+          inset: "var(--background-raised)",
         },
         brand: {
-          50: "#eef2ff",
-          500: "#6366f1",
-          600: "#4f46e5",
-          700: "#4338ca",
-        },
-        walrus: {
-          400: "#38bdf8",
-          500: "#0ea5e9",
-          600: "#0284c7",
-        },
-        tatum: {
-          400: "#a855f7",
-          500: "#8b5cf6",
-          600: "#7c3aed",
+          DEFAULT: "var(--accent)",
+          strong: "var(--accent-strong)",
+          ink: "var(--accent-ink)",
         }
+      },
+      fontFamily: {
+        sans: ["Aptos", "Segoe UI", "sans-serif"],
+        display: ["Aptos Display", "Segoe UI", "sans-serif"],
+      },
+      borderRadius: {
+        card: "var(--radius-card)",
+      },
+      boxShadow: {
+        panel: "var(--shadow-panel)",
       },
     },
   },
   plugins: [],
 };
 export default config;
-

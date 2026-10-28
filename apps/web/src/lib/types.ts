@@ -1,6 +1,12 @@
 export interface AdapterDiagnostic {
   status: string;
-  [key: string]: any;
+  configured?: boolean;
+  connected?: boolean;
+  network?: string;
+  type?: string;
+  model?: string;
+  error?: string;
+  message?: string;
 }
 
 export interface HealthResponse {
@@ -68,4 +74,3 @@ export interface SuiActivity {
   last_checkpoint?: number;
   fetched_at: string;
 }
-
