@@ -5,6 +5,9 @@ import type {
   SessionStatus,
 } from "./types";
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
+const MEMORY_WRITE_TIMEOUT_MS = 170_000;
+
 export class ApiError extends Error {
   constructor(message: string, public readonly status: number) {
     super(message);
@@ -16,6 +19,7 @@ async function requestJson<T>(
   path: string,
   init?: RequestInit,
   acceptFailedOperation = false,
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
 ): Promise<T> {
   let response: Response;
   try {
@@ -27,7 +31,7 @@ async function requestJson<T>(
         ...(init?.body ? { "Content-Type": "application/json" } : {}),
         ...init?.headers,
       },
-      signal: AbortSignal.timeout(12_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
     throw new ApiError("ORHEX could not reach its service. Please try again.", 0);
@@ -76,11 +80,12 @@ export function rememberMemory(input: {
   text: string;
   category?: string;
   memory_type?: string;
+  idempotency_key: string;
 }): Promise<MemoryOperation> {
   return requestJson("/api/bff/memory/remember", {
     method: "POST",
     body: JSON.stringify(input),
-  }, true);
+  }, true, MEMORY_WRITE_TIMEOUT_MS);
 }
 
 export function recallMemories(query: string, limit = 5): Promise<MemoryRecallResponse> {

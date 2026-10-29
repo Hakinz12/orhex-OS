@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useRef, useState } from "react";
 import { MemoryIcon, SearchIcon, ShieldIcon } from "@/components/icons";
 import { EmptyState, PageHeading } from "@/components/ui";
 import { ApiError, getMemoryOperation, recallMemories, reconcileMemoryOperation, rememberMemory } from "@/lib/api";
@@ -18,17 +18,34 @@ export default function MemoryPage() {
   const [operationId, setOperationId] = useState("");
   const [lookupBusy, setLookupBusy] = useState(false);
   const [lookupError, setLookupError] = useState<string | null>(null);
+  const rememberAttempt = useRef<{ text: string; idempotencyKey: string } | null>(null);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaveBusy(true);
     setSaveError(null);
     setOperation(null);
+    const normalizedText = text.trim();
+    if (!rememberAttempt.current || rememberAttempt.current.text !== normalizedText) {
+      rememberAttempt.current = { text: normalizedText, idempotencyKey: crypto.randomUUID() };
+    }
+    const { idempotencyKey } = rememberAttempt.current;
     try {
-      setOperation(await rememberMemory({ text }));
-      setText("");
+      const saved = await rememberMemory({
+        text: normalizedText,
+        idempotency_key: idempotencyKey,
+      });
+      rememberAttempt.current = null;
+      setOperation(saved);
+      if (saved.status !== "failed") setText("");
     } catch (reason) {
-      setSaveError(reason instanceof ApiError ? reason.message : "The memory could not be saved.");
+      setSaveError(
+        reason instanceof ApiError && reason.status === 503
+          ? "The save outcome could not be confirmed. Retry this same save to retrieve its operation; do not edit and resubmit it as a new memory."
+          : reason instanceof ApiError
+            ? reason.message
+            : "The memory could not be saved.",
+      );
     } finally {
       setSaveBusy(false);
     }
@@ -93,7 +110,7 @@ export default function MemoryPage() {
                 <code className="max-w-full break-all text-[10px] text-[#90a1b0]">{operation.operation_id}</code>
               </div>
               {operation.error && <p className="mt-2 text-[11px] text-[#d4a39f]">{operation.error}</p>}
-              {operation.status !== "confirmed" && (
+              {(operation.status === "pending" || operation.status === "reconciliation_required") && (
                 <button type="button" className="secondary-button mt-3 text-[10px]" onClick={() => void lookup(true)} disabled={lookupBusy}>
                   {lookupBusy ? "Checking…" : "Check and reconcile status"}
                 </button>

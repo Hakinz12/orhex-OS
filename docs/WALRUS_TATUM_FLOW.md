@@ -18,10 +18,15 @@ backend-only.
    - The FastAPI backend commits a `pending` memory operation, including its
      owner, per-user namespace, metadata, and stable idempotency key, before
      dispatching the write.
+   - The browser supplies a request idempotency key; an uncertain same-save
+     retry reuses it so the backend returns the existing operation rather than
+     dispatching a second Walrus write.
    - The SDK signs the text and namespace using the Ed25519 delegate private key (`MEMWAL_PRIVATE_KEY`).
    - The SDK sends the signed request to `MEMWAL_SERVER_URL`.
 4. **State Confirmation:**
    - `remember_and_wait()` waits for the storage job to finish.
+   - The BFF and browser wait limits cover the SDK's 60-second request timeout
+     plus its 90-second job-status polling window.
    - The adapter reports `CONFIRMED` only when the SDK returns a blob ID.
    - The app confirms the local operation only after that result is committed.
      Definite failures become `FAILED`; ambiguous outcomes become
@@ -40,12 +45,15 @@ additional metadata are not stored in Walrus by the SDK.
 
 The application derives each user's namespace from the configured namespace
 prefix and a one-way hash of the application user ID; clients do not choose a
-namespace. A durable operation ID is passed as the SDK idempotency key. While
+namespace. Each operation stores a durable operation ID and an idempotency
+key, which is passed to the SDK. While
 the SDK supports explicit idempotency keys and job-status lookup, uncertain
-operations are not retried automatically: an operator or later recovery
-workflow must first establish the original job's outcome. Local category,
-memory type, source, confidence, metadata, owner, and timestamps remain in
-`memory_sync_records`; they are not Walrus payload fields.
+operations are not retried automatically. The UI keeps the same request key
+after a lost response and asks the user to retry that same save to recover its
+operation ID; status reconciliation checks the original job and never
+resubmits it. Local category, memory type, source, confidence, metadata, owner,
+and timestamps remain in `memory_sync_records`; they are not Walrus payload
+fields.
 
 ### API authentication and ownership
 

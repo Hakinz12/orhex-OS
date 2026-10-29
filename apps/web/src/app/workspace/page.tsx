@@ -5,7 +5,7 @@ import type { FormEvent } from "react";
 import Link from "next/link";
 import { ArrowRightIcon, MemoryIcon, MessageIcon, SearchIcon, ShieldIcon, SparkIcon } from "@/components/icons";
 import { PageHeading } from "@/components/ui";
-import { ApiError, fetchMemoryStatus, recallMemories, rememberMemory } from "@/lib/api";
+import { ApiError, fetchMemoryStatus, recallMemories, reconcileMemoryOperation, rememberMemory } from "@/lib/api";
 import type { MemoryOperation, MemoryRecallResponse, MemoryServiceStatus } from "@/lib/types";
 
 export default function WorkspacePage() {
@@ -19,6 +19,8 @@ export default function WorkspacePage() {
   const [rememberBusy, setRememberBusy] = useState(false);
   const [rememberError, setRememberError] = useState<string | null>(null);
   const [operation, setOperation] = useState<MemoryOperation | null>(null);
+  const [operationCheckBusy, setOperationCheckBusy] = useState(false);
+  const rememberAttempt = useRef<{ text: string; idempotencyKey: string } | null>(null);
   const [question, setQuestion] = useState("");
   const [recallBusy, setRecallBusy] = useState(false);
   const [recallError, setRecallError] = useState<string | null>(null);
@@ -81,13 +83,39 @@ export default function WorkspacePage() {
     setRememberBusy(true);
     setRememberError(null);
     setOperation(null);
+    const text = rememberText.trim();
+    if (!rememberAttempt.current || rememberAttempt.current.text !== text) {
+      rememberAttempt.current = { text, idempotencyKey: crypto.randomUUID() };
+    }
+    const { idempotencyKey } = rememberAttempt.current;
     try {
-      setOperation(await rememberMemory({ text: rememberText }));
-      setRememberText("");
+      const saved = await rememberMemory({ text, idempotency_key: idempotencyKey });
+      rememberAttempt.current = null;
+      setOperation(saved);
+      if (saved.status !== "failed") setRememberText("");
     } catch (reason) {
-      setRememberError(reason instanceof ApiError ? reason.message : "The memory could not be saved.");
+      setRememberError(
+        reason instanceof ApiError && reason.status === 503
+          ? "The save outcome could not be confirmed. Retry this same save to retrieve its operation; do not edit and resubmit it as a new memory."
+          : reason instanceof ApiError
+            ? reason.message
+            : "The memory could not be saved.",
+      );
     } finally {
       setRememberBusy(false);
+    }
+  }
+
+  async function checkOperation() {
+    if (!operation) return;
+    setOperationCheckBusy(true);
+    setRememberError(null);
+    try {
+      setOperation(await reconcileMemoryOperation(operation.operation_id));
+    } catch (reason) {
+      setRememberError(reason instanceof ApiError ? reason.message : "The operation status is unavailable.");
+    } finally {
+      setOperationCheckBusy(false);
     }
   }
 
@@ -173,7 +201,32 @@ export default function WorkspacePage() {
             <button type="submit" className="primary-button" disabled={rememberBusy || rememberText.trim().length < 3}>
               <SparkIcon className="h-4 w-4" />{rememberBusy ? "Saving…" : "Save to memory"}
             </button>
-            {operation && <p role="status" className="text-[11px] text-[#a8c8b3]">Memory operation {operation.status}: {operation.operation_id}</p>}
+            {operation && (
+              <div role="status" className="text-[11px] text-[#a8c8b3]">
+                <p>
+                  {operation.status === "confirmed"
+                    ? "Memory save confirmed."
+                    : operation.status === "failed"
+                      ? "Memory save failed. Your text is still available to try again."
+                      : operation.status === "pending"
+                        ? "Memory save is pending confirmation. Check its status before submitting it again."
+                        : operation.status === "reconciliation_required"
+                          ? "Memory save outcome is uncertain. Check its status before submitting it again."
+                          : `Memory operation status: ${operation.status}`}
+                </p>
+                <p className="mt-1 break-all">{operation.operation_id}</p>
+                {operation.status !== "confirmed" && operation.status !== "failed" && (
+                  <button
+                    type="button"
+                    className="secondary-button mt-2 text-[10px]"
+                    onClick={() => void checkOperation()}
+                    disabled={operationCheckBusy}
+                  >
+                    {operationCheckBusy ? "Checking…" : "Check operation status"}
+                  </button>
+                )}
+              </div>
+            )}
           </form>
         </article>
 

@@ -1,5 +1,7 @@
 const SESSION_PATH = "/api/v1/auth/session";
 const MEMORY_STATUS_PATH = "/api/v1/memory/status";
+const MEMORY_WRITE_TIMEOUT_MS = 160_000;
+const BACKEND_REQUEST_TIMEOUT_MS = 8_000;
 
 export function sessionCookieName(env = process.env) {
   // Keep the existing cookie name so active browser sessions survive the rebrand.
@@ -110,11 +112,20 @@ export async function callBackend(
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
       cache: "no-store",
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(
+        path === "/api/v1/memory/remember"
+          ? MEMORY_WRITE_TIMEOUT_MS
+          : BACKEND_REQUEST_TIMEOUT_MS,
+      ),
       redirect: "error",
     });
     return { kind: "response", response };
-  } catch {
+  } catch (error) {
+    const errorName =
+      error instanceof Error && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(error.name)
+        ? error.name
+        : "UnknownError";
+    console.warn("Backend request failed: %s", errorName);
     return { kind: "unavailable" };
   }
 }

@@ -184,6 +184,7 @@ test("only approved backend paths can be called", async () => {
 
 test("authenticated BFF forwarding supports real memory save and recall contracts", async () => {
   const requests = [];
+  const idempotencyKey = "00000000-0000-4000-8000-000000000001";
   const fetchImpl = async (url, init) => {
     requests.push({ url, init });
     return jsonResponse(url.endsWith("/remember")
@@ -194,7 +195,7 @@ test("authenticated BFF forwarding supports real memory save and recall contract
   const saved = await callBackend("/api/v1/memory/remember", {
     token: validToken,
     method: "POST",
-    body: { text: "A real saved fact" },
+    body: { text: "A real saved fact", idempotency_key: idempotencyKey },
     env: backendEnv,
     fetchImpl,
   });
@@ -214,8 +215,77 @@ test("authenticated BFF forwarding supports real memory save and recall contract
     assert.equal(init.cache, "no-store");
     assert.equal(init.redirect, "error");
   }
-  assert.deepEqual(JSON.parse(requests[0].init.body), { text: "A real saved fact" });
+  assert.deepEqual(JSON.parse(requests[0].init.body), {
+    text: "A real saved fact",
+    idempotency_key: idempotencyKey,
+  });
   assert.deepEqual(JSON.parse(requests[1].init.body), { query: "saved context" });
+});
+
+test("memory save forwarding waits long enough to return pending SDK operations", async () => {
+  const originalTimeout = AbortSignal.timeout;
+  let requestedTimeout;
+  AbortSignal.timeout = (milliseconds) => {
+    requestedTimeout = milliseconds;
+    return originalTimeout(Math.ceil(milliseconds / 1000));
+  };
+
+  try {
+    const result = await callBackend("/api/v1/memory/remember", {
+      token: validToken,
+      method: "POST",
+      body: { text: "A delayed but accepted write", idempotency_key: "00000000-0000-4000-8000-000000000001" },
+      env: backendEnv,
+      fetchImpl: (_url, { signal }) => new Promise((resolve, reject) => {
+        const timer = setTimeout(
+          () => resolve(jsonResponse({ status: "reconciliation_required", operation_id: "operation-123" }, 202)),
+          25,
+        );
+        signal.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        }, { once: true });
+      }),
+    });
+
+    assert.equal(requestedTimeout, 160_000);
+    assert.equal(result.kind, "response");
+    assert.equal(result.response.status, 202);
+    assert.deepEqual(await result.response.json(), {
+      status: "reconciliation_required",
+      operation_id: "operation-123",
+    });
+
+    await callBackend("/api/v1/memory/status", {
+      token: validToken,
+      env: backendEnv,
+      fetchImpl: async () => jsonResponse({ status: "ready" }),
+    });
+    assert.equal(requestedTimeout, 8_000);
+  } finally {
+    AbortSignal.timeout = originalTimeout;
+  }
+});
+
+test("backend failure diagnostics include only a sanitized error type", async () => {
+  const originalWarn = console.warn;
+  const warnings = [];
+  console.warn = (...args) => warnings.push(args);
+
+  try {
+    const result = await callBackend("/api/v1/memory/status", {
+      token: validToken,
+      env: backendEnv,
+      fetchImpl: async () => {
+        throw new TypeError("private memory text and credentials");
+      },
+    });
+
+    assert.deepEqual(result, { kind: "unavailable" });
+    assert.deepEqual(warnings, [["Backend request failed: %s", "TypeError"]]);
+  } finally {
+    console.warn = originalWarn;
+  }
 });
 
 test("authenticated operation lookup and reconciliation use only approved routes", async () => {
@@ -280,6 +350,16 @@ test("memory bodies reject extra identity fields and invalid limits", () => {
   assert.equal(validateRememberBody({ text: "A useful memory", user_id: "other" }), null);
   assert.equal(validateRememberBody({ text: "A useful memory", namespace: "other" }), null);
   assert.deepEqual(validateRememberBody({ text: " A useful memory " }), { text: "A useful memory" });
+  assert.deepEqual(
+    validateRememberBody({
+      text: "A useful memory",
+      idempotency_key: "00000000-0000-4000-8000-000000000001",
+    }),
+    {
+      text: "A useful memory",
+      idempotency_key: "00000000-0000-4000-8000-000000000001",
+    },
+  );
   assert.equal(validateRecallBody({ query: "useful context", limit: 21 }), null);
   assert.equal(validateRecallBody({ query: "useful context", user_id: "other" }), null);
   assert.deepEqual(validateRecallBody({ query: " useful context ", limit: 5 }), { query: "useful context", limit: 5 });

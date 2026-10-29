@@ -427,6 +427,34 @@ async def test_write_failures_and_uncertain_outcomes_have_explicit_responses(api
 
 
 @pytest.mark.asyncio
+async def test_retrying_an_uncertain_save_key_returns_the_existing_operation(api_harness):
+    _, token = await provision(api_harness)
+    api_harness.walrus.write_result = ConnectionError("simulated lost response")
+    request = {
+        "text": "A save whose response was lost.",
+        "idempotency_key": "00000000-0000-4000-8000-000000000001",
+    }
+
+    first = await api_harness.client.post(
+        "/api/v1/memory/remember",
+        headers=bearer(token),
+        json=request,
+    )
+    retry = await api_harness.client.post(
+        "/api/v1/memory/remember",
+        headers=bearer(token),
+        json=request,
+    )
+
+    assert first.status_code == 202
+    assert first.json()["status"] == "reconciliation_required"
+    assert retry.status_code == 202
+    assert retry.json()["status"] == "reconciliation_required"
+    assert retry.json()["operation_id"] == first.json()["operation_id"]
+    api_harness.walrus.remember.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_recall_failure_uses_gateway_error_contract(api_harness):
     _, token = await provision(api_harness)
     api_harness.walrus.recall.side_effect = WalrusAdapterError("Walrus unavailable")
