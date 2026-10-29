@@ -42,7 +42,7 @@ async def _revoke(user_id: str) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Trusted ORHREX API user/token administration."
+        description="Trusted ORHEX API user/token administration."
     )
     commands = parser.add_subparsers(dest="command", required=True)
 

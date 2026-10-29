@@ -21,7 +21,7 @@ export default function InsightsPage() {
           Insights require real account context and a connected intelligence workflow. Nothing is fabricated for this preview.
         </EmptyState>
       </section>
-      <p className="inline-flex items-start gap-2 text-[10px] leading-5 text-[#7c8b9b]"><ShieldIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#9fb5c7]" /> ORHREX is designed to explain why an insight appears; unsupported recommendations will not be presented as personal guidance.</p>
+      <p className="inline-flex items-start gap-2 text-[10px] leading-5 text-[#7c8b9b]"><ShieldIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#9fb5c7]" /> ORHEX is designed to explain why an insight appears; unsupported recommendations will not be presented as personal guidance.</p>
     </div>
   );
 }

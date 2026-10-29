@@ -24,7 +24,7 @@ from app.services.memory_persistence import (
     reconcile_memory,
 )
 
-logger = logging.getLogger("orhrex.api.memory")
+logger = logging.getLogger("orhex.api.memory")
 router = APIRouter(prefix="/memory", tags=["Walrus Memory"])
 _walrus = MemWalAdapter()
 

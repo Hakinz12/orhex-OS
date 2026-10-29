@@ -22,7 +22,7 @@ tatum_adapter = TatumSuiAdapter()
 @router.get("/health", response_model=HealthResponse)
 async def get_system_health(db: AsyncSession = Depends(get_db)):
     """
-    Returns live operational status of ORHREX OS API and all connected adapters.
+    Returns live operational status of ORHEX OS API and all connected adapters.
     Verifies database connectivity and credential configuration without leaking secrets.
     """
     # 1. Database Check

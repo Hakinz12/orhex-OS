@@ -1,7 +1,7 @@
 [project]
-name = "orhrex-api"
+name = "orhex-api"
 version = "0.1.0"
-description = "ORHREX OS Backend API — Intelligence That Anticipates"
+description = "ORHEX OS Backend API — Your World. Understood."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

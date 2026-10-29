@@ -1,4 +1,4 @@
-"""Database connection and session management for ORHREX OS."""
+"""Database connection and session management for ORHEX OS."""
 from typing import AsyncGenerator
 from sqlalchemy import event, inspect
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession

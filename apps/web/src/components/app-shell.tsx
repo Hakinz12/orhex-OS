@@ -44,6 +44,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     [search],
   );
 
+  if (pathname === "/signin") return <>{children}</>;
+
   function searchBox(mobile = false) {
     return (
       <div className={`relative ${mobile ? "" : "hidden w-full max-w-[430px] sm:block"}`}>
@@ -129,12 +131,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-background">
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-[252px] flex-col border-r border-[#1c2530] bg-[#0b1017] lg:flex">
-        <Link href="/" className="flex h-[84px] items-center gap-3 px-6" aria-label="ORHREX home">
+        <Link href="/" className="flex h-[84px] items-center gap-3 px-6" aria-label="ORHEX home">
           <span className="flex h-10 w-10 items-center justify-center rounded-[14px] border border-[#344554] bg-[#17222d] text-[#c5dced]">
             <MarkIcon className="h-6 w-6" />
           </span>
           <span>
-            <span className="font-display block text-[16px] font-extrabold tracking-[0.16em] text-[#f0f3f6]">ORHREX</span>
+            <span className="font-display block text-[16px] font-extrabold tracking-[0.16em] text-[#f0f3f6]">ORHEX</span>
             <span className="mt-0.5 block text-[10px] tracking-[0.04em] text-[#8392a2]">Your World. Understood.</span>
           </span>
         </Link>
@@ -146,14 +148,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             Private by design
           </div>
           <p className="mt-2 text-[11px] leading-5 text-[#8493a3]">
-            Your account session is not connected yet. Secure sign-in will arrive through the ORHREX backend.
+            Private operations use the session verified by the ORHEX backend. Manage access in Settings.
           </p>
           <span className="mt-3 inline-flex rounded-md border border-[#303d49] px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.1em] text-[#9ba9b7]">
-            Authentication unavailable
+            Protected session
           </span>
         </div>
         <div className="border-t border-[#1c2530] px-5 py-4">
-          <p className="text-[10px] text-[#647384]">ORHREX OS · Private intelligence</p>
+          <p className="text-[10px] text-[#647384]">ORHEX OS · Private intelligence</p>
         </div>
       </aside>
 
@@ -168,7 +170,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="flex h-[76px] items-center justify-between px-5">
               <Link href="/" onClick={() => setMobileOpen(false)} className="flex items-center gap-3">
                 <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#344554] bg-[#17222d] text-[#c5dced]"><MarkIcon className="h-5 w-5" /></span>
-                <span className="font-display text-sm font-extrabold tracking-[0.15em]">ORHREX</span>
+                <span className="font-display text-sm font-extrabold tracking-[0.15em]">ORHEX</span>
               </Link>
               <button className="icon-button" aria-label="Close menu" onClick={() => setMobileOpen(false)}><CloseIcon className="h-5 w-5" /></button>
             </div>
@@ -184,24 +186,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <button className="icon-button lg:hidden" aria-label="Open navigation menu" onClick={() => setMobileOpen(true)}>
               <MenuIcon className="h-5 w-5" />
             </button>
-            <Link href="/" className="flex shrink-0 items-center gap-2 lg:hidden" aria-label="ORHREX home">
+            <Link href="/" className="flex shrink-0 items-center gap-2 lg:hidden" aria-label="ORHEX home">
               <span className="flex h-8 w-8 items-center justify-center rounded-[11px] border border-[#344554] bg-[#17222d] text-[#c5dced]">
                 <MarkIcon className="h-[18px] w-[18px]" />
               </span>
-              <span className="font-display text-[11px] font-extrabold tracking-[0.13em] text-[#e7edf2]">ORHREX</span>
+              <span className="font-display text-[11px] font-extrabold tracking-[0.13em] text-[#e7edf2]">ORHEX</span>
             </Link>
             {searchBox()}
             <div className="ml-auto flex items-center gap-2">
               <span className="hidden items-center gap-2 rounded-full border border-[#26313d] px-3 py-1.5 text-[10px] text-[#9aa8b6] md:inline-flex">
                 <span className="status-dot" data-status="unconfigured" />
-                Session not connected
+                Secure session
               </span>
               <button className="icon-button" aria-label="Notifications unavailable" title="Notifications will be available when your account is connected" disabled>
                 <BellIcon className="h-[18px] w-[18px]" />
               </button>
-              <div className="flex h-9 w-9 items-center justify-center rounded-full border border-[#364450] bg-[#1c2732] text-[11px] font-semibold text-[#b8c7d4]" aria-label="Account not connected">
-                —
-              </div>
+              <Link href="/settings" className="icon-button" aria-label="Open session settings" title="Session settings">
+                <ShieldIcon className="h-[18px] w-[18px]" />
+              </Link>
             </div>
           </div>
           <div className="px-4 pb-2 sm:hidden">{searchBox(true)}</div>

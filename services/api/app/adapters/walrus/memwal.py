@@ -16,7 +16,7 @@ from memwal import (
 from app.adapters.walrus.base import BaseWalrusMemory
 from app.core.config import settings
 
-logger = logging.getLogger("orhrex.walrus")
+logger = logging.getLogger("orhex.walrus")
 
 _client: Optional[MemWal] = None
 _client_lock = asyncio.Lock()

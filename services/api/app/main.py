@@ -1,4 +1,4 @@
-"""Main entrypoint for ORHREX OS FastAPI Service."""
+"""Main entrypoint for ORHEX OS FastAPI Service."""
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
@@ -10,6 +10,7 @@ from app.core.rate_limit import SensitiveEndpointRateLimiter
 from app.core.database import AsyncSessionLocal, init_db
 from app.adapters.walrus.memwal import close_walrus_client
 from app.api.v1.health import router as health_router
+from app.api.v1.auth import router as auth_router
 from app.api.v1.memory import router as memory_router
 from app.api.v1.memory import ErrorResponse
 from app.services.memory_persistence import recover_pending_operations
@@ -18,7 +19,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger("orhrex.api")
+logger = logging.getLogger("orhex.api")
 _sensitive_rate_limiter = SensitiveEndpointRateLimiter(
     requests_per_minute=settings.AUTH_RATE_LIMIT_PER_MINUTE
 )
@@ -27,7 +28,7 @@ _sensitive_rate_limiter = SensitiveEndpointRateLimiter(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan context manager for startup and shutdown routines."""
-    logger.info("Initializing ORHREX OS database tables...")
+    logger.info("Initializing ORHEX OS database tables...")
     try:
         settings.validate_security_configuration()
         await init_db()
@@ -41,12 +42,12 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Closing Walrus Memory client...")
     await close_walrus_client()
-    logger.info("ORHREX OS API shutting down.")
+    logger.info("ORHEX OS API shutting down.")
 
 
 app = FastAPI(
     title=settings.APP_NAME,
-    description="Intelligence That Anticipates — Memory-Powered Personal AI Operating System",
+    description="Your World. Understood. — Memory-Powered Personal Operating System",
     version="0.1.0",
     lifespan=lifespan
 )
@@ -54,7 +55,10 @@ app = FastAPI(
 
 @app.middleware("http")
 async def limit_memory_api_requests(request: Request, call_next):
-    if request.url.path.startswith("/api/v1/memory/"):
+    if (
+        request.url.path.startswith("/api/v1/memory/")
+        or request.url.path == "/api/v1/auth/session"
+    ):
         peer = request.client.host if request.client is not None else "unknown"
         allowed, retry_after = await _sensitive_rate_limiter.check(peer)
         if not allowed:
@@ -123,6 +127,7 @@ app.add_middleware(
 
 # Register API routers
 app.include_router(health_router, prefix="/api/v1")
+app.include_router(auth_router, prefix="/api/v1")
 app.include_router(memory_router, prefix="/api/v1")
 
 
@@ -131,7 +136,7 @@ async def root():
     """Root info endpoint."""
     return {
         "app": settings.APP_NAME,
-        "tagline": "Intelligence That Anticipates",
+        "tagline": "Your World. Understood.",
         "version": "0.1.0",
         "health_check": "/api/v1/health",
         "documentation": "/docs"

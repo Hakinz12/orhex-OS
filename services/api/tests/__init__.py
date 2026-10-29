@@ -1,2 +1,2 @@
-"""ORHREX OS API Tests"""
+"""ORHEX OS API Tests"""
 

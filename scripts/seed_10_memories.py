@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ORHREX OS — Mandatory Mainnet Memory Seeding Script
+ORHEX OS — Mandatory Mainnet Memory Seeding Script
 Seed and verify >=10 genuine, curated user-approved memories on Walrus Memory Mainnet.
 """
 import sys
@@ -20,7 +20,7 @@ CURATED_MEMORIES = [
     {
         "category": "goals",
         "type": "semantic",
-        "text": "User goal: Complete and submit ORHREX OS for the Tatum x Walrus Total Recall 2026 hackathon by November 10, 2026."
+        "text": "User goal: Complete and submit ORHEX OS for the Tatum x Walrus Total Recall 2026 hackathon by November 10, 2026."
     },
     {
         "category": "commitments",
@@ -72,7 +72,7 @@ CURATED_MEMORIES = [
 
 async def seed_memories():
     print("=" * 72)
-    print("  ORHREX OS — Walrus Memory Mainnet Seeding Tool (>=10 Memories)")
+    print("  ORHEX OS — Walrus Memory Mainnet Seeding Tool (>=10 Memories)")
     print("=" * 72)
 
     walrus = MemWalAdapter()

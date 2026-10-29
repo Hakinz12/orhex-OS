@@ -379,7 +379,7 @@ async def test_memory_owner_foreign_key_is_enforced_by_sqlite(db_session):
             id="orphaned-memory",
             user_id="missing-owner",
             idempotency_key="orphaned-memory",
-            namespace="orhrex-isolated",
+            namespace="orhex-isolated",
             text="This record must not persist without a user.",
             status="pending",
         )

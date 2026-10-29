@@ -67,7 +67,7 @@ class GeminiAdapter(BaseLLMAdapter):
         """Assemble structured prompt and query Gemini."""
         if not self.api_key:
             return {
-                "answer": "ORHREX OS is awaiting a valid GEMINI_API_KEY. Please configure your key in .env.",
+                "answer": "ORHEX OS is awaiting a valid GEMINI_API_KEY. Please configure your key in .env.",
                 "evidence": [],
                 "recommendations": [],
                 "candidate_memories": []

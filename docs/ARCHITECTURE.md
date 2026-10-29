@@ -1,10 +1,10 @@
-# ORHREX OS — Architecture Specification
+# ORHEX OS — Architecture Specification
 
 ## Overview
 
-ORHREX OS is a memory-powered personal operating system built for the **Tatum x Walrus Total Recall 2026** hackathon (*Smart Agents for Real Life* track).
+ORHEX OS is a memory-powered personal operating system built for the **Tatum x Walrus Total Recall 2026** hackathon (*Smart Agents for Real Life* track).
 
-Context fragmentation is the primary limiting factor of conventional LLM chat interfaces: every conversation begins with a blank slate, requiring users to repeatedly restate goals, constraints, preferences, and personal context. ORHREX OS bridges this gap by persisting a verified, portable memory graph using **Walrus Memory Mainnet**, gathering live contextual blockchain data via **Tatum Sui RPC**, and formulating proactive recommendations with **Google Gemini**.
+Context fragmentation is the primary limiting factor of conventional LLM chat interfaces: every conversation begins with a blank slate, requiring users to repeatedly restate goals, constraints, preferences, and personal context. ORHEX OS bridges this gap by persisting a verified, portable memory graph using **Walrus Memory Mainnet**, gathering live contextual blockchain data via **Tatum Sui RPC**, and formulating proactive recommendations with **Google Gemini**.
 
 ---
 

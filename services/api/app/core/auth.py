@@ -111,6 +111,14 @@ async def resolve_bearer_user(
     session: AsyncSession, token: str
 ) -> Optional[User]:
     """Resolve an active bearer credential to its verified application user."""
+    resolved = await resolve_bearer_session(session, token)
+    return resolved[0] if resolved is not None else None
+
+
+async def resolve_bearer_session(
+    session: AsyncSession, token: str
+) -> Optional[Tuple[User, datetime]]:
+    """Resolve an active bearer credential and its exact backend expiration."""
     try:
         digest = _token_digest(token)
     except (ValueError, UnicodeEncodeError):
@@ -135,7 +143,7 @@ async def resolve_bearer_user(
             expiration = expiration.replace(tzinfo=timezone.utc)
         if expiration <= datetime.now(timezone.utc):
             return None
-        return credential.user
+        return credential.user, expiration
     except SQLAlchemyError as exc:
         await session.rollback()
         raise AuthenticationDatabaseError(

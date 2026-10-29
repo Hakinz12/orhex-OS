@@ -1,9 +1,9 @@
-"""Configuration settings for ORHREX OS API using Pydantic Settings."""
+"""Configuration settings for ORHEX OS API using Pydantic Settings."""
 import re
 from typing import List
 from pathlib import Path
 from urllib.parse import urlsplit
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Search order for .env files: current working dir, services/api dir, or workspace root
@@ -13,7 +13,7 @@ _workspace_root = _base_dir.parent.parent
 
 class Settings(BaseSettings):
     # --- Application Core ---
-    APP_NAME: str = "ORHREX OS"
+    APP_NAME: str = "ORHEX OS"
     APP_ENV: str = "development"
     API_HOST: str = "127.0.0.1"
     API_PORT: int = 8000
@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     MEMWAL_ACCOUNT_ID: str = ""
     MEMWAL_PRIVATE_KEY: str = ""
     MEMWAL_SERVER_URL: str = "https://relayer.memory.walrus.xyz"  # Official Mainnet relayer
-    MEMWAL_NAMESPACE: str = "orhrex-personal-memory"              # Dedicated ORHREX namespace
+    MEMWAL_NAMESPACE: str = "orhrex-personal-memory"              # Dedicated ORHEX namespace
     WALRUS_NETWORK: str = "mainnet"
 
     # --- Blockchain: Tatum Sui RPC ---
@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     TATUM_SUI_RPC_URL: str = "https://sui-mainnet.gateway.tatum.io"
     SUI_NETWORK: str = "mainnet"
     DEMO_SUI_ADDRESS: str = ""
+
+    @field_validator("APP_NAME", mode="before")
+    @classmethod
+    def normalize_legacy_app_name(cls, value):
+        if isinstance(value, str) and value.strip().casefold() == "orhrex os":
+            return "ORHEX OS"
+        return value
 
     model_config = SettingsConfigDict(
         env_file=(_workspace_root / ".env", _base_dir / ".env", ".env"),

@@ -45,7 +45,7 @@ export interface RecommendationItem {
 
 export interface ChatMessage {
   id: string;
-  sender: "user" | "orhrex";
+  sender: "user" | "orhex";
   text: string;
   timestamp: string;
   evidence?: EvidenceItem[];
@@ -64,6 +64,48 @@ export interface MemoryRecord {
   created_at: string;
   confirmed_at?: string;
   blob_id?: string;
+}
+
+export interface SessionStatus {
+  authenticated: boolean;
+  expiresAt: string;
+}
+
+export interface MemoryServiceStatus {
+  status: string;
+  write_ready?: boolean;
+  relayer_status?: string;
+  relayer_version?: string;
+  mode?: string;
+  error?: string;
+  message?: string;
+}
+
+export interface MemoryOperation {
+  status: string;
+  operation_id: string;
+  blob_id?: string | null;
+  memory_id?: string | null;
+  category?: string;
+  memory_type?: string;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
+  confirmed_at?: string | null;
+  error?: string | null;
+}
+
+export interface MemoryRecallHit {
+  blob_id: string;
+  text: string;
+  distance: number;
+  score?: number;
+  created_at?: string | null;
+}
+
+export interface MemoryRecallResponse {
+  query: string;
+  total: number;
+  results: MemoryRecallHit[];
 }
 
 export interface SuiActivity {

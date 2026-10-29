@@ -22,6 +22,14 @@ from app.core.rate_limit import SensitiveEndpointRateLimiter
 from app.models.domain import UserAccessToken
 
 
+def test_legacy_application_name_is_normalized_for_branding():
+    legacy = Settings(_env_file=None, APP_NAME="ORHREX OS")
+    official = Settings(_env_file=None, APP_NAME="ORHEX OS")
+
+    assert legacy.APP_NAME == "ORHEX OS"
+    assert official.APP_NAME == "ORHEX OS"
+
+
 @pytest.mark.asyncio
 async def test_provisioned_tokens_are_random_digested_and_expire_by_configured_ttl(
     monkeypatch,

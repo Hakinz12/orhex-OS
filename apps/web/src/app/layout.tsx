@@ -4,8 +4,8 @@ import "../styles/globals.css";
 
 export const metadata: Metadata = {
   title: {
-    default: "ORHREX OS — Your World. Understood.",
-    template: "%s · ORHREX OS",
+    default: "ORHEX OS — Your World. Understood.",
+    template: "%s · ORHEX OS",
   },
   description:
     "An intelligent personal operating system that remembers relevant context, understands your world, and helps turn understanding into action.",

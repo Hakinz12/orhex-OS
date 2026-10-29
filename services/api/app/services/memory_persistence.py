@@ -13,7 +13,7 @@ from app.adapters.walrus.base import BaseWalrusMemory
 from app.core.config import settings
 from app.models.domain import MemorySyncRecord, User, generate_uuid, utc_now
 
-logger = logging.getLogger("orhrex.memory.persistence")
+logger = logging.getLogger("orhex.memory.persistence")
 
 PERSISTENCE_STATES = frozenset(
     {"pending", "confirmed", "failed", "reconciliation_required"}

@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM Domain Models for ORHREX OS."""
+"""SQLAlchemy ORM Domain Models for ORHEX OS."""
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import (

@@ -1,21 +1,21 @@
-# ORHREX OS — Intelligence That Anticipates
+# ORHEX OS — Your World. Understood.
 
 [![Hackathon: Tatum x Walrus Total Recall 2026](https://img.shields.io/badge/Hackathon-Tatum_x_Walrus_Total_Recall_2026-blueviolet.svg)](https://tatum.io/hackathon/total-recall)
 [![Track: Smart Agents for Real Life](https://img.shields.io/badge/Track-Smart_Agents_for_Real_Life-00C49F.svg)](https://recall-tatum-walrus.vercel.app/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-> **ORHREX OS** is a memory-powered personal AI operating system engineered to eliminate context fragmentation. Rather than resetting context every conversation, ORHREX carries an authorized, durable memory of goals, preferences, and commitments across sessions using **Walrus Memory Mainnet**. It connects persistent memory with live on-chain signals through **Tatum Sui RPC** and synthesizes proactive, explainable recommendations using **Google Gemini**.
+> **ORHEX OS** is a memory-powered personal AI operating system engineered to eliminate context fragmentation. Rather than resetting context every conversation, ORHEX carries an authorized, durable memory of goals, preferences, and commitments across sessions using **Walrus Memory Mainnet**. It connects persistent memory with live on-chain signals through **Tatum Sui RPC** and synthesizes proactive, explainable recommendations using **Google Gemini**.
 
 ---
 
 ## 🎯 The One-Line Demo
-> *Tell ORHREX about a goal, preference, recurring commitment, or connected Sui wallet; return in a fresh session — ORHREX recalls the exact facts and surfaces a useful, explainable next action you never have to repeat.*
+> *Tell ORHEX about a goal, preference, recurring commitment, or connected Sui wallet; return in a fresh session — ORHEX recalls the exact facts and surfaces a useful, explainable next action you never have to repeat.*
 
 ---
 
 ## 🏗️ System Architecture
 
-ORHREX OS is built as a clean, decoupled **modular monolith**:
+ORHEX OS is built as a clean, decoupled **modular monolith**:
 
 ```
 +--------------------------------------------------------------------------+
@@ -53,7 +53,7 @@ ORHREX OS is built as a clean, decoupled **modular monolith**:
 ## 📂 Repository Structure
 
 ```
-orhrex-os/
+orhex-OS/
 ├── apps/
 │   └── web/                   # Next.js 15 + TypeScript + Tailwind CSS Frontend
 │       ├── src/
@@ -92,11 +92,15 @@ orhrex-os/
 ### 1. Clone & Configure Environment
 ```bash
 # Clone the repository
-git clone https://github.com/<your-username>/orhrex-os.git
-cd orhrex-os
+git clone https://github.com/Hakinz12/orhex-OS.git
+cd orhex-OS
 
-# Copy environment template
+# Backend environment
 cp .env.example .env
+
+# Frontend environment (Next.js server-side configuration)
+# Create apps/web/.env.local and add:
+# ORHEX_API_BASE_URL=http://127.0.0.1:8000
 ```
 Open `.env` and fill in your API credentials:
 - `GEMINI_API_KEY`: From [Google AI Studio](https://aistudio.google.com/)
@@ -157,7 +161,6 @@ pytest -v
 ---
 
 ## 🛡️ Security & Privacy Boundaries
-- **No Custody:** ORHREX OS will never ask for or store wallet seed phrases or private keys.
+- **No Custody:** ORHEX OS will never ask for or store wallet seed phrases or private keys.
 - **Data Minimization:** No indiscriminate logging of chat conversations. Atomic facts are classified and stored with consent.
 - **Isolated Namespaces:** User memories are partitioned strictly by authenticated user namespace.
-

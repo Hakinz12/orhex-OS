@@ -40,7 +40,12 @@ async def test_walrus_adapter_unconfigured_behavior():
 @pytest.mark.asyncio
 async def test_tatum_sui_adapter_unconfigured_behavior(monkeypatch):
     """Verify unconfigured readiness without allowing any HTTP client creation."""
+    monkeypatch.setenv("TATUM_API_KEY", "")
+    monkeypatch.setenv("TATUM_SUI_RPC_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("SUI_NETWORK", "testnet")
     monkeypatch.setattr(settings, "TATUM_API_KEY", "")
+    monkeypatch.setattr(settings, "TATUM_SUI_RPC_URL", "http://127.0.0.1:1")
+    monkeypatch.setattr(settings, "SUI_NETWORK", "testnet")
 
     def fail_on_http_request(*args, **kwargs):
         raise AssertionError("Unconfigured Tatum adapter attempted an HTTP request")
@@ -49,8 +54,9 @@ async def test_tatum_sui_adapter_unconfigured_behavior(monkeypatch):
         "app.adapters.tatum.sui_rpc.httpx.AsyncClient",
         fail_on_http_request,
     )
-    adapter = TatumSuiAdapter(api_key="", rpc_url="https://sui-mainnet.gateway.tatum.io")
-    assert adapter.network == "mainnet"
+    adapter = TatumSuiAdapter()
+    assert adapter.network == "testnet"
+    assert adapter.rpc_url == "http://127.0.0.1:1"
 
     readiness = await adapter.check_readiness()
     assert readiness["configured"] is False

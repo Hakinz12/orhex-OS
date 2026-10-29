@@ -12,7 +12,7 @@ from app.core.config import settings
 TEST_PRIVATE_KEY = "a" * 64
 TEST_ACCOUNT_ID = "0x" + "b" * 64
 TEST_SERVER_URL = "https://walrus.example.test/custom/relayer"
-TEST_NAMESPACE = "orhrex-test"
+TEST_NAMESPACE = "orhex-test"
 
 
 @pytest.fixture(autouse=True)

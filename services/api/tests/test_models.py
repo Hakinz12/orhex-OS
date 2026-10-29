@@ -32,7 +32,7 @@ async def test_create_user_and_goal(test_db_session: AsyncSession):
 
     goal = Goal(
         user_id=user.id,
-        title="Deploy ORHREX OS to Mainnet",
+        title="Deploy ORHEX OS to Mainnet",
         progress_percent=25
     )
     test_db_session.add(goal)

@@ -18,7 +18,7 @@ export default function TimelinePage() {
           </div>
         </div>
         <EmptyState title="Your timeline is waiting for connected activity" icon={<ClockIcon className="h-7 w-7" />}>
-          No events are available. ORHREX will not invent dates, conversations, or personal history.
+          No events are available. ORHEX will not invent dates, conversations, or personal history.
         </EmptyState>
       </section>
     </div>

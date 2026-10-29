@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ORHREX OS — Pre-flight Integration & Credential Verification Tool
+ORHEX OS — Pre-flight Integration & Credential Verification Tool
 Performs non-destructive diagnostics on:
   1. Google Gemini API
   2. Tatum Sui RPC Gateway
@@ -50,7 +50,7 @@ async def check_database() -> dict:
 
 async def main():
     print("=" * 72)
-    print("  ORHREX OS — Integration & Credential Handshake Diagnostics")
+    print("  ORHEX OS — Integration & Credential Handshake Diagnostics")
     print(f"  App Environment: {settings.APP_ENV}")
     print(f"  Workspace Root:  {repo_root}")
     print("=" * 72)

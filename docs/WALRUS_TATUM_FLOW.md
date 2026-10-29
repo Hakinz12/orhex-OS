@@ -1,8 +1,8 @@
-# ORHREX OS — Walrus & Tatum Integration Flow
+# ORHEX OS — Walrus & Tatum Integration Flow
 
 ## 1. Walrus Memory Mainnet Flow
 
-ORHREX OS utilizes **Walrus Memory** to solve the persistent memory problem in AI agents. Walrus stores encrypted, verifiable memory blobs on decentralized storage nodes secured by Sui.
+ORHEX OS utilizes **Walrus Memory** to solve the persistent memory problem in AI agents. Walrus stores encrypted, verifiable memory blobs on decentralized storage nodes secured by Sui.
 
 The backend adapter uses the official Python SDK, pinned to `memwal==0.2.1`.
 It passes `MEMWAL_SERVER_URL` and the configured namespace directly to the SDK;
@@ -82,7 +82,7 @@ multi-instance deployments need an edge/shared rate limiter for a global limit.
 
 ## 2. Tatum Sui RPC Integration Flow
 
-ORHREX OS provides contextual on-chain intelligence through **Tatum's Sui RPC Gateway**.
+ORHEX OS provides contextual on-chain intelligence through **Tatum's Sui RPC Gateway**.
 
 ### Guardrails & Security:
 - **Strictly Read-Only:** The user only inputs a public Sui address (`0x...`). No private keys, mnemonic phrases, or signing capabilities are ever requested.

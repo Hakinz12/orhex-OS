@@ -1,4 +1,4 @@
-# ORHREX OS — API Contract Specification
+# ORHEX OS — API Contract Specification
 
 Base URL: `http://localhost:8000/api/v1`
 
@@ -15,7 +15,7 @@ Returns the operational health of the FastAPI service and diagnostics for config
 ```json
 {
   "status": "ok",
-  "app_name": "ORHREX OS",
+  "app_name": "ORHEX OS",
   "version": "0.1.0",
   "environment": "development",
   "timestamp": "2026-10-28T01:50:00Z",

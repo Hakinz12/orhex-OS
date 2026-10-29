@@ -150,6 +150,25 @@ async def test_memory_api_requests_are_rate_limited(api_harness, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_session_metadata_is_rate_limited(api_harness, monkeypatch):
+    from app import main as main_module
+
+    monkeypatch.setattr(
+        main_module,
+        "_sensitive_rate_limiter",
+        SensitiveEndpointRateLimiter(requests_per_minute=2),
+    )
+    first = await api_harness.client.get("/api/v1/auth/session")
+    second = await api_harness.client.get("/api/v1/auth/session")
+    third = await api_harness.client.get("/api/v1/auth/session")
+
+    assert first.status_code == 401
+    assert second.status_code == 401
+    assert third.status_code == 429
+    assert third.headers.get("retry-after")
+
+
+@pytest.mark.asyncio
 async def test_provisioned_bearer_authenticates_and_token_is_not_stored(api_harness):
     user_id, token = await provision(api_harness, preferred_name="Alice")
     response = await api_harness.client.get(
@@ -166,6 +185,74 @@ async def test_provisioned_bearer_authenticates_and_token_is_not_stored(api_harn
         assert token not in credentials[0].token_digest
         assert user.preferred_name == "Alice"
 
+
+@pytest.mark.asyncio
+async def test_session_metadata_returns_only_exact_token_expiration(api_harness):
+    user_id, token = await provision(api_harness)
+    async with api_harness.factory() as session:
+        credential = (
+            await session.execute(
+                select(UserAccessToken).where(UserAccessToken.user_id == user_id)
+            )
+        ).scalar_one()
+        stored_expiration = credential.expires_at
+        if stored_expiration.tzinfo is None:
+            stored_expiration = stored_expiration.replace(tzinfo=timezone.utc)
+    response = await api_harness.client.get(
+        "/api/v1/auth/session",
+        headers=bearer(token),
+    )
+
+    assert response.status_code == 200
+    assert set(response.json()) == {"expires_at"}
+    returned_expiration = datetime.fromisoformat(response.json()["expires_at"])
+    assert returned_expiration == stored_expiration
+    assert token not in response.text
+
+
+@pytest.mark.asyncio
+async def test_session_metadata_rejects_missing_or_invalid_tokens(api_harness):
+    missing = await api_harness.client.get("/api/v1/auth/session")
+    invalid = await api_harness.client.get(
+        "/api/v1/auth/session",
+        headers=bearer("orh_invalid-token"),
+    )
+
+    assert missing.status_code == 401
+    assert invalid.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_session_metadata_rejects_expired_and_revoked_tokens(api_harness):
+    user_id, revoked_token = await provision(api_harness)
+    _, expired_token = await provision(api_harness)
+
+    async with api_harness.factory() as session:
+        revoked_credential = (
+            await session.execute(
+                select(UserAccessToken).where(UserAccessToken.user_id == user_id)
+            )
+        ).scalar_one()
+        assert await revoke_user_token(
+            session,
+            user_id=user_id,
+            token_id=revoked_credential.id,
+        )
+
+        expired_credential = (
+            await session.execute(
+                select(UserAccessToken).where(UserAccessToken.user_id != user_id)
+            )
+        ).scalar_one()
+        expired_credential.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        await session.commit()
+
+    for token in (revoked_token, expired_token):
+        response = await api_harness.client.get(
+            "/api/v1/auth/session",
+            headers=bearer(token),
+        )
+        assert response.status_code == 401
 
 @pytest.mark.asyncio
 async def test_revoked_and_expired_tokens_are_rejected(api_harness):
