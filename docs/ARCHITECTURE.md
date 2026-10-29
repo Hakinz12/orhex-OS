@@ -84,7 +84,7 @@ Context fragmentation is the primary limiting factor of conventional LLM chat in
 - `services/api/app/adapters/`:
   - `llm/`: `BaseLLM` interface and `GeminiAdapter`.
   - `walrus/`: `BaseWalrusMemory` interface and `MemWalAdapter` with Ed25519 request signature generation.
-  - `tatum/`: `BaseBlockchain` interface and `TatumSuiAdapter` with JSON-RPC 2.0 communication.
+  - `tatum/`: `BaseBlockchain` interface and `TatumSuiAdapter` with authenticated, read-only Sui GraphQL communication.
 - `services/api/app/core/`:
   - `config.py`: Environment validation via `pydantic-settings`.
   - `database.py`: SQLAlchemy async engine and session factory.

@@ -36,7 +36,8 @@ Returns the operational health of the FastAPI service and diagnostics for config
     "tatum": {
       "status": "ready",
       "network": "mainnet",
-      "endpoint": "https://sui-mainnet.gateway.tatum.io"
+      "endpoint": "https://sui-mainnet.gateway.tatum.io",
+      "connected": true
     }
   }
 }
@@ -131,4 +132,3 @@ Associates a public Sui address with the user profile for read-only tracking.
 
 ### `GET /api/v1/integrations/sui-wallet/activity`
 Fetches on-chain balance and recent transaction digest summary via Tatum RPC.
-

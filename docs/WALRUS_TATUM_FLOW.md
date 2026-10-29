@@ -64,13 +64,12 @@ credentials for an account.
 
 This MVP does not provide password login, refresh tokens, automated identity
 provider integration, or a token-management UI. Long-lived tokens must be
-revoked out of band and sent only over HTTPS. The development frontend does
-not yet include a sign-in flow. The browser API client must not hold bearer
-tokens in `localStorage` or a `NEXT_PUBLIC_*` variable. For browser integration,
-use a same-origin Next.js backend-for-frontend route that stores the credential
-in an `HttpOnly; Secure; SameSite` cookie and forwards authenticated requests
-server-side, with CSRF protection for state-changing requests. No frontend
-cookie flow is implemented in this phase.
+revoked out of band and sent only over HTTPS. The frontend sign-in flow
+validates provisioned bearer tokens through the backend and stores them only
+in a same-origin `HttpOnly` cookie; server-side BFF routes forward the
+authenticated requests, and state-changing routes enforce same-origin checks.
+The browser API client does not hold bearer tokens in `localStorage` or a
+`NEXT_PUBLIC_*` variable.
 
 The API requires `API_PUBLIC_URL=https://...` and explicit HTTPS CORS origins
 when `APP_ENV=production`. TLS must terminate at the deployment edge and
@@ -80,15 +79,14 @@ multi-instance deployments need an edge/shared rate limiter for a global limit.
 
 ---
 
-## 2. Tatum Sui RPC Integration Flow
+## 2. Tatum Sui GraphQL Integration Flow
 
-ORHEX OS provides contextual on-chain intelligence through **Tatum's Sui RPC Gateway**.
+ORHEX OS provides contextual on-chain intelligence through **Tatum's Sui GraphQL Gateway**.
 
 ### Guardrails & Security:
 - **Strictly Read-Only:** The user only inputs a public Sui address (`0x...`). No private keys, mnemonic phrases, or signing capabilities are ever requested.
-- **Tatum Gateway RPC:** The backend routes calls via `https://sui-mainnet.gateway.tatum.io` using the `x-api-key` header.
-- **Supported Methods:**
-  - `suix_getBalance`: Queries coin balance for SUI (`0x2::sui::SUI`).
-  - `suix_queryTransactionBlocks`: Queries recent transaction activity.
-  - `sui_getLatestCheckpointSequenceNumber`: Validates node liveness and sync status.
+- **Tatum Gateway GraphQL:** The backend posts read-only queries to the configured Tatum endpoint's `/graphql` path using the server-side `x-api-key` header.
+- **Readiness:** The backend validates a live `chainIdentifier` and latest checkpoint response; a configured API key alone does not mean the service is connected.
+- **Balance and Activity:** GraphQL queries retrieve the SUI balance and recent sent-transaction summaries for the requested public address.
+- **Interface Migration:** Sui Foundation disabled JSON-RPC on its Mainnet full nodes in July 2026. ORHEX uses Tatum's current GraphQL interface rather than the legacy JSON-RPC methods.
 - **Explainable Interpretation:** Raw on-chain data is paired with user preferences to create clear explanations (e.g., notifying the user of contract activity relevant to an active goal).

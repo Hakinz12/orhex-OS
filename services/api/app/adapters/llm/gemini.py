@@ -20,6 +20,9 @@ class GeminiAdapter(BaseLLMAdapter):
         self.model = settings.GEMINI_MODEL if model is None else model
         self.base_url = "https://generativelanguage.googleapis.com/v1beta/models"
 
+    def _headers(self) -> Dict[str, str]:
+        return {"x-goog-api-key": self.api_key}
+
     async def check_readiness(self) -> Dict[str, Any]:
         """Perform a non-destructive handshake to verify API key and model availability."""
         if not self.api_key:
@@ -29,10 +32,10 @@ class GeminiAdapter(BaseLLMAdapter):
                 "model": self.model
             }
 
-        url = f"{self.base_url}/{self.model}?key={self.api_key}"
+        url = f"{self.base_url}/{self.model}"
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                res = await client.get(url)
+                res = await client.get(url, headers=self._headers())
                 if res.status_code == 200:
                     data = res.json()
                     return {
@@ -45,14 +48,14 @@ class GeminiAdapter(BaseLLMAdapter):
                     return {
                         "status": "error",
                         "status_code": res.status_code,
-                        "message": res.text,
+                        "message": "Gemini model readiness request was rejected.",
                         "model": self.model
                     }
         except Exception as e:
-            logger.error(f"Gemini readiness check failed: {e}")
+            logger.error("Gemini readiness check failed: %s", type(e).__name__)
             return {
                 "status": "unreachable",
-                "error": str(e),
+                "error": type(e).__name__,
                 "model": self.model
             }
 
@@ -89,7 +92,7 @@ class GeminiAdapter(BaseLLMAdapter):
             f"'recommendations' (list of {{title, reason, source_memory_id}})."
         )
 
-        url = f"{self.base_url}/{self.model}:generateContent?key={self.api_key}"
+        url = f"{self.base_url}/{self.model}:generateContent"
         payload = {
             "contents": [
                 {
@@ -104,7 +107,7 @@ class GeminiAdapter(BaseLLMAdapter):
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                res = await client.post(url, json=payload)
+                res = await client.post(url, json=payload, headers=self._headers())
                 if res.status_code == 200:
                     data = res.json()
                     candidates = data.get("candidates", [])
@@ -120,14 +123,14 @@ class GeminiAdapter(BaseLLMAdapter):
                                 "recommendations": []
                             }
                 return {
-                    "answer": f"Gemini API returned status {res.status_code}: {res.text}",
+                    "answer": f"Gemini API returned status {res.status_code}.",
                     "evidence": [],
                     "recommendations": []
                 }
         except Exception as e:
-            logger.error(f"Gemini generate_response error: {e}")
+            logger.error("Gemini generate_response error: %s", type(e).__name__)
             return {
-                "answer": f"Error communicating with Gemini: {str(e)}",
+                "answer": "Error communicating with Gemini.",
                 "evidence": [],
                 "recommendations": []
             }
@@ -146,7 +149,7 @@ class GeminiAdapter(BaseLLMAdapter):
             f"User message: {user_message}"
         )
 
-        url = f"{self.base_url}/{self.model}:generateContent?key={self.api_key}"
+        url = f"{self.base_url}/{self.model}:generateContent"
         payload = {
             "contents": [{"parts": [{"text": extract_prompt}]}],
             "generationConfig": {
@@ -157,12 +160,12 @@ class GeminiAdapter(BaseLLMAdapter):
 
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
-                res = await client.post(url, json=payload)
+                res = await client.post(url, json=payload, headers=self._headers())
                 if res.status_code == 200:
                     data = res.json()
                     raw = data["candidates"][0]["content"]["parts"][0]["text"]
                     parsed = json.loads(raw)
                     return parsed if isinstance(parsed, list) else []
         except Exception as e:
-            logger.error(f"Gemini extract_candidate_memories error: {e}")
+            logger.error("Gemini extract_candidate_memories error: %s", type(e).__name__)
         return []
