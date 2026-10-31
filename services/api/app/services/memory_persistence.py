@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +35,10 @@ class MemoryOwnerNotFoundError(MemoryPersistenceError):
 
 class MemoryWriteUncertainError(MemoryPersistenceError):
     """Walrus may have accepted a write, so it must not be blindly retried."""
+
+
+class MemoryStateConflictError(MemoryPersistenceError):
+    """The requested memory lifecycle transition is not allowed."""
 
 
 def namespace_for_user(user_id: str, base_namespace: Optional[str] = None) -> str:
@@ -360,6 +364,191 @@ async def get_owned_memory(
         raise MemoryPersistenceError("Could not load the owned memory record.") from exc
 
 
+async def trash_memory(
+    session: AsyncSession, *, user_id: str, record_id: str
+) -> Optional[MemorySyncRecord]:
+    """Move a confirmed owned memory to Trash without contacting Walrus."""
+    try:
+        trashed_at = utc_now()
+        transition = await session.execute(
+            update(MemorySyncRecord)
+            .where(
+                MemorySyncRecord.id == record_id,
+                MemorySyncRecord.user_id == user_id,
+                MemorySyncRecord.status == "confirmed",
+                MemorySyncRecord.trashed_at.is_(None),
+                MemorySyncRecord.permanent_delete_started_at.is_(None),
+            )
+            .values(trashed_at=trashed_at, updated_at=trashed_at)
+            .execution_options(synchronize_session=False)
+        )
+        result = await session.execute(
+            select(MemorySyncRecord)
+            .where(
+                MemorySyncRecord.id == record_id,
+                MemorySyncRecord.user_id == user_id,
+            )
+            .execution_options(populate_existing=True)
+        )
+        record = result.scalar_one_or_none()
+        if record is None:
+            await session.rollback()
+            return None
+        if record.permanent_delete_started_at is not None:
+            await session.rollback()
+            raise MemoryStateConflictError(
+                "Memory cannot be moved to Trash after permanent deletion has started.",
+                record_id,
+            )
+        if record.status != "confirmed":
+            await session.rollback()
+            raise MemoryStateConflictError(
+                "Only confirmed memories can be moved to Trash.",
+                record_id,
+            )
+        if transition.rowcount == 0 and record.trashed_at is None:
+            await session.rollback()
+            raise MemoryStateConflictError(
+                "Memory state changed while it was being moved to Trash.",
+                record_id,
+            )
+        await session.commit()
+        return record
+    except MemoryStateConflictError:
+        raise
+    except SQLAlchemyError as exc:
+        await session.rollback()
+        raise MemoryPersistenceError("Could not move the owned memory to Trash.") from exc
+
+
+async def restore_memory(
+    session: AsyncSession, *, user_id: str, record_id: str
+) -> Optional[MemorySyncRecord]:
+    """Restore a trashed owned memory unless permanent deletion has begun."""
+    try:
+        restored_at = utc_now()
+        transition = await session.execute(
+            update(MemorySyncRecord)
+            .where(
+                MemorySyncRecord.id == record_id,
+                MemorySyncRecord.user_id == user_id,
+                MemorySyncRecord.status == "confirmed",
+                MemorySyncRecord.trashed_at.is_not(None),
+                MemorySyncRecord.permanent_delete_started_at.is_(None),
+            )
+            .values(trashed_at=None, updated_at=restored_at)
+            .execution_options(synchronize_session=False)
+        )
+        result = await session.execute(
+            select(MemorySyncRecord)
+            .where(
+                MemorySyncRecord.id == record_id,
+                MemorySyncRecord.user_id == user_id,
+            )
+            .execution_options(populate_existing=True)
+        )
+        record = result.scalar_one_or_none()
+        if record is None:
+            await session.rollback()
+            return None
+        if record.permanent_delete_started_at is not None:
+            await session.rollback()
+            raise MemoryStateConflictError(
+                "Memory cannot be restored after permanent deletion has started.",
+                record_id,
+            )
+        if record.status != "confirmed":
+            await session.rollback()
+            raise MemoryStateConflictError(
+                "Only confirmed memories can be restored.",
+                record_id,
+            )
+        if transition.rowcount == 0 and record.trashed_at is not None:
+            await session.rollback()
+            raise MemoryStateConflictError(
+                "Memory state changed while it was being restored.",
+                record_id,
+            )
+        await session.commit()
+        return record
+    except MemoryStateConflictError:
+        raise
+    except SQLAlchemyError as exc:
+        await session.rollback()
+        raise MemoryPersistenceError("Could not restore the owned memory.") from exc
+
+
+async def list_memories_for_user(
+    session: AsyncSession, *, user_id: str, folder: str
+) -> List[MemorySyncRecord]:
+    """List confirmed memories in an owner-scoped active or Trash folder."""
+    if folder not in {"active", "trash"}:
+        raise ValueError("Memory folder must be active or trash.")
+    try:
+        user = await session.get(User, user_id)
+        if user is None:
+            await session.rollback()
+            raise MemoryOwnerNotFoundError("Application user does not exist.")
+        conditions = [
+            MemorySyncRecord.user_id == user_id,
+            MemorySyncRecord.status == "confirmed",
+        ]
+        if folder == "active":
+            conditions.extend(
+                [
+                    MemorySyncRecord.trashed_at.is_(None),
+                    MemorySyncRecord.permanent_delete_started_at.is_(None),
+                ]
+            )
+        else:
+            conditions.append(MemorySyncRecord.trashed_at.is_not(None))
+        result = await session.execute(
+            select(MemorySyncRecord)
+            .where(*conditions)
+            .order_by(MemorySyncRecord.created_at.desc())
+        )
+        records = list(result.scalars())
+        await session.commit()
+        return records
+    except MemoryOwnerNotFoundError:
+        raise
+    except SQLAlchemyError as exc:
+        await session.rollback()
+        raise MemoryPersistenceError("Could not list the user's memories.") from exc
+
+
+async def active_memory_context_for_user(
+    session: AsyncSession, *, user_id: str, limit: int = 20
+) -> List[str]:
+    """Return only active, confirmed memory text for future AI context assembly."""
+    if limit < 1:
+        raise ValueError("Memory context limit must be at least 1.")
+    try:
+        user = await session.get(User, user_id)
+        if user is None:
+            await session.rollback()
+            raise MemoryOwnerNotFoundError("Application user does not exist.")
+        result = await session.execute(
+            select(MemorySyncRecord.text)
+            .where(
+                MemorySyncRecord.user_id == user_id,
+                MemorySyncRecord.status == "confirmed",
+                MemorySyncRecord.trashed_at.is_(None),
+                MemorySyncRecord.permanent_delete_started_at.is_(None),
+            )
+            .order_by(MemorySyncRecord.created_at.desc())
+            .limit(limit)
+        )
+        texts = list(result.scalars())
+        await session.commit()
+        return texts
+    except MemoryOwnerNotFoundError:
+        raise
+    except SQLAlchemyError as exc:
+        await session.rollback()
+        raise MemoryPersistenceError("Could not assemble active memory context.") from exc
+
+
 async def recall_for_user(
     session: AsyncSession,
     walrus: BaseWalrusMemory,
@@ -382,8 +571,29 @@ async def recall_for_user(
         raise MemoryPersistenceError(
             "Could not validate the owner before recalling memories."
         ) from exc
-    return await walrus.recall(
+    hits = await walrus.recall(
         namespace=namespace_for_user(user_id),
         query=query,
         limit=limit,
     )
+    try:
+        trashed_result = await session.execute(
+            select(MemorySyncRecord.walrus_blob_id).where(
+                MemorySyncRecord.user_id == user_id,
+                MemorySyncRecord.namespace == namespace_for_user(user_id),
+                MemorySyncRecord.status == "confirmed",
+                (
+                    MemorySyncRecord.trashed_at.is_not(None)
+                    | MemorySyncRecord.permanent_delete_started_at.is_not(None)
+                ),
+                MemorySyncRecord.walrus_blob_id.is_not(None),
+            )
+        )
+        trashed_blob_ids = set(trashed_result.scalars())
+        await session.commit()
+    except SQLAlchemyError as exc:
+        await session.rollback()
+        raise MemoryPersistenceError(
+            "Could not enforce the active-memory filter after recall."
+        ) from exc
+    return [hit for hit in hits if hit.get("blob_id") not in trashed_blob_ids]

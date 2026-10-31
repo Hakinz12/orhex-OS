@@ -1,5 +1,6 @@
 import type {
   MemoryOperation,
+  MemoryFolderResponse,
   MemoryRecallResponse,
   MemoryServiceStatus,
   SessionStatus,
@@ -104,5 +105,29 @@ export function reconcileMemoryOperation(operationId: string): Promise<MemoryOpe
     `/api/bff/memory/operations/${encodeURIComponent(operationId)}/reconcile`,
     { method: "POST" },
     true,
+  );
+}
+
+export function listMemories(folder: "active" | "trash"): Promise<MemoryFolderResponse> {
+  return requestJson(`/api/bff/memory/records/${folder}`);
+}
+
+export function trashMemory(operationId: string): Promise<MemoryOperation> {
+  return requestJson(`/api/bff/memory/operations/${encodeURIComponent(operationId)}`, {
+    method: "DELETE",
+  });
+}
+
+export function restoreMemory(operationId: string): Promise<MemoryOperation> {
+  return requestJson(
+    `/api/bff/memory/operations/${encodeURIComponent(operationId)}/restore`,
+    { method: "POST" },
+  );
+}
+
+export function checkPermanentDeleteSupport(operationId: string): Promise<MemoryOperation> {
+  return requestJson(
+    `/api/bff/memory/operations/${encodeURIComponent(operationId)}/permanent-delete`,
+    { method: "POST" },
   );
 }

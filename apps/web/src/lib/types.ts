@@ -91,7 +91,21 @@ export interface MemoryOperation {
   metadata?: Record<string, unknown>;
   created_at?: string;
   confirmed_at?: string | null;
+  trashed_at?: string | null;
+  permanent_delete_started_at?: string | null;
   error?: string | null;
+}
+
+export interface ManagedMemory extends MemoryOperation {
+  text: string;
+  category: string;
+  memory_type: string;
+}
+
+export interface MemoryFolderResponse {
+  folder: "active" | "trash";
+  total: number;
+  memories: ManagedMemory[];
 }
 
 export interface MemoryRecallHit {

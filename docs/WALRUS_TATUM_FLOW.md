@@ -43,6 +43,27 @@ deletion; the adapter reports these operations as unsupported. The SDK write
 method accepts text and namespace only, so category, memory type, and
 additional metadata are not stored in Walrus by the SDK.
 
+### Recoverable Trash (Phase 1)
+
+Confirmed memory operations can be moved to a local, recoverable Trash by
+`DELETE /api/v1/memory/operations/{operation_id}` and restored with
+`POST /api/v1/memory/operations/{operation_id}/restore`. Both transitions are
+authenticated and scoped to the owner in the local database. Trash records are
+excluded by the backend from semantic recall, active-memory listing, and the
+active-only helper intended for AI context assembly. Records with permanent
+deletion in progress are also excluded from recall and active context. Moving a
+record to Trash does not call Walrus or delete its remote blob.
+
+The Memory page lists Active Memories and Trash from owner-scoped backend
+queries. Permanent deletion remains unsupported: the explicit permanent-delete
+capability route checks the adapter and returns `501` when the configured
+deployment does not support it. It does not mark the record deleted or change
+the Walrus blob. `trashed_at` and `permanent_delete_started_at` preserve the
+lifecycle history and prevent restoration after a future deletion attempt has
+actually started. The optional `users.memory_trash_retention_days` setting
+defaults to `NULL` (user-controlled Trash); `30` is reserved for a future
+opt-in auto-empty policy. Phase 1 has no background deletion job.
+
 The application derives each user's namespace from the configured namespace
 prefix and a one-way hash of the application user ID; clients do not choose a
 namespace. Each operation stores a durable operation ID and an idempotency

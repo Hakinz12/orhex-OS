@@ -1,10 +1,10 @@
 "use client";
 
-import { FormEvent, useRef, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { MemoryIcon, SearchIcon, ShieldIcon } from "@/components/icons";
 import { EmptyState, PageHeading } from "@/components/ui";
-import { ApiError, getMemoryOperation, recallMemories, reconcileMemoryOperation, rememberMemory } from "@/lib/api";
-import type { MemoryOperation, MemoryRecallResponse } from "@/lib/types";
+import { ApiError, checkPermanentDeleteSupport, getMemoryOperation, listMemories, recallMemories, reconcileMemoryOperation, rememberMemory, restoreMemory, trashMemory } from "@/lib/api";
+import type { ManagedMemory, MemoryOperation, MemoryRecallResponse } from "@/lib/types";
 
 export default function MemoryPage() {
   const [text, setText] = useState("");
@@ -18,7 +18,34 @@ export default function MemoryPage() {
   const [operationId, setOperationId] = useState("");
   const [lookupBusy, setLookupBusy] = useState(false);
   const [lookupError, setLookupError] = useState<string | null>(null);
+  const [folder, setFolder] = useState<"active" | "trash">("active");
+  const [memories, setMemories] = useState<ManagedMemory[]>([]);
+  const [folderBusy, setFolderBusy] = useState(true);
+  const [folderError, setFolderError] = useState<string | null>(null);
+  const [memoryActionMessage, setMemoryActionMessage] = useState<string | null>(null);
+  const [memoryActionBusy, setMemoryActionBusy] = useState<string | null>(null);
   const rememberAttempt = useRef<{ text: string; idempotencyKey: string } | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setFolderBusy(true);
+    setFolderError(null);
+    void listMemories(folder)
+      .then((result) => {
+        if (active) setMemories(result.memories);
+      })
+      .catch((reason: unknown) => {
+        if (active) {
+          setFolderError(reason instanceof ApiError ? reason.message : "The memory list is unavailable.");
+        }
+      })
+      .finally(() => {
+        if (active) setFolderBusy(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [folder]);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -38,6 +65,13 @@ export default function MemoryPage() {
       rememberAttempt.current = null;
       setOperation(saved);
       if (saved.status !== "failed") setText("");
+      if (saved.status === "confirmed" && folder === "active") {
+        try {
+          setMemories((await listMemories("active")).memories);
+        } catch (reason) {
+          setFolderError(reason instanceof ApiError ? reason.message : "The memory list could not be refreshed.");
+        }
+      }
     } catch (reason) {
       setSaveError(
         reason instanceof ApiError && reason.status === 503
@@ -76,6 +110,43 @@ export default function MemoryPage() {
       setLookupError(reason instanceof ApiError ? reason.message : "The operation status is unavailable.");
     } finally {
       setLookupBusy(false);
+    }
+  }
+
+  async function moveMemory(memory: ManagedMemory, action: "trash" | "restore" | "permanent-delete") {
+    setMemoryActionBusy(memory.operation_id);
+    setMemoryActionMessage(null);
+    let successMessage: string;
+    try {
+      if (action === "trash") {
+        await trashMemory(memory.operation_id);
+        successMessage = "Moved to Trash. Its Walrus data has not been deleted.";
+      } else if (action === "restore") {
+        await restoreMemory(memory.operation_id);
+        successMessage = "Memory restored to Active Memories.";
+      } else {
+        await checkPermanentDeleteSupport(memory.operation_id);
+        successMessage = "Permanent deletion is not available. The memory remains in Trash.";
+      }
+    } catch (reason) {
+      setMemoryActionMessage(
+        reason instanceof ApiError && reason.status === 501
+          ? "Walrus permanent deletion is unsupported. This memory remains in Trash and its remote data is unchanged."
+          : reason instanceof ApiError
+            ? reason.message
+            : "The memory action could not be completed.",
+      );
+      setMemoryActionBusy(null);
+      return;
+    }
+    setMemoryActionMessage(successMessage);
+    try {
+      const updated = await listMemories(folder);
+      setMemories(updated.memories);
+    } catch (reason) {
+      setFolderError(reason instanceof ApiError ? reason.message : "The memory list could not be refreshed.");
+    } finally {
+      setMemoryActionBusy(null);
     }
   }
 
@@ -145,6 +216,90 @@ export default function MemoryPage() {
           )}
         </section>
       </div>
+
+      <section className="surface-card p-5 sm:p-7">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-[13px] font-semibold text-[#e4eaf0]">Your memories</h2>
+            <p className="mt-1 text-[11px] leading-5 text-[#8795a4]">
+              Trash is recoverable and user-controlled. No memory is automatically or remotely deleted.
+            </p>
+          </div>
+          <div className="flex gap-2" role="tablist" aria-label="Memory folders">
+            {(["active", "trash"] as const).map((item) => (
+              <button
+                key={item}
+                type="button"
+                role="tab"
+                aria-selected={folder === item}
+                className={folder === item ? "primary-button" : "secondary-button"}
+                onClick={() => {
+                  setFolder(item);
+                  setMemoryActionMessage(null);
+                }}
+              >
+                {item === "active" ? "Active Memories" : "Trash"}
+              </button>
+            ))}
+          </div>
+        </div>
+        {memoryActionMessage && <p role="status" className="mt-4 text-[11px] text-[#a9c5d9]">{memoryActionMessage}</p>}
+        {folderError && <p role="alert" className="mt-4 text-[11px] text-[#e2a8a4]">{folderError}</p>}
+        {folderBusy ? (
+          <p className="mt-5 text-[11px] text-[#8795a4]">Loading memories…</p>
+        ) : memories.length ? (
+          <ul className="mt-5 space-y-3">
+            {memories.map((item) => (
+              <li key={item.operation_id} className="rounded-xl border border-[#26323e] bg-[#0f151c] p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <p className="whitespace-pre-wrap text-[11px] leading-5 text-[#c2ccd5]">{item.text}</p>
+                  <span className="rounded-full border border-[#35404b] px-2.5 py-1 text-[10px] capitalize text-[#a2afbb]">
+                    {item.trashed_at ? "In Trash" : "Active"}
+                  </span>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-[10px] text-[#748394]">
+                    <span>{item.category}</span>
+                    <span className="mx-2">·</span>
+                    <span>{new Date(item.created_at || "").toLocaleString()}</span>
+                    {item.blob_id && <code className="ml-2 break-all">Walrus blob: {item.blob_id}</code>}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {folder === "active" ? (
+                      <button type="button" className="secondary-button text-[10px]" onClick={() => void moveMemory(item, "trash")} disabled={memoryActionBusy !== null}>
+                        {memoryActionBusy === item.operation_id ? "Moving…" : "Move to Trash"}
+                      </button>
+                    ) : (
+                      <>
+                        <button type="button" className="secondary-button text-[10px]" onClick={() => void moveMemory(item, "restore")} disabled={memoryActionBusy !== null || item.permanent_delete_started_at !== null}>
+                          {memoryActionBusy === item.operation_id ? "Restoring…" : "Restore"}
+                        </button>
+                        <button type="button" className="secondary-button text-[10px]" onClick={() => void moveMemory(item, "permanent-delete")} disabled={memoryActionBusy !== null || item.permanent_delete_started_at !== null}>
+                          Check permanent-delete support
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+                {item.permanent_delete_started_at && (
+                  <p className="mt-3 text-[10px] text-[#d4a39f]">Permanent deletion has started; this memory cannot be restored.</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="mt-5">
+            <EmptyState title={folder === "active" ? "No active memories" : "Trash is empty"}>
+              {folder === "active" ? "Save a memory or restore one from Trash." : "Deleted memories will appear here until restored."}
+            </EmptyState>
+          </div>
+        )}
+        {folder === "trash" && (
+          <p className="mt-4 text-[10px] leading-5 text-[#748394]">
+            Permanent deletion is currently unsupported by the configured Walrus service. Checking support will not delete the remote record.
+          </p>
+        )}
+      </section>
 
       <section className="surface-card p-5 sm:p-7">
         <div className="flex items-start gap-3">

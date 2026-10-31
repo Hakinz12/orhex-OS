@@ -87,31 +87,28 @@ Sends a user message into the orchestrator. Retrieves relevant memories, builds 
 
 ## 3. Persistent Memory Operations (Walrus Memory)
 
-### `GET /api/v1/memories`
-List stored memories for the active user namespace.
+The current authenticated API is rooted at `/api/v1/memory`. Ownership and the
+per-user Walrus namespace are derived from the bearer-token principal; clients
+must not submit an owner ID or namespace.
 
-### `POST /api/v1/memories/confirm`
-Explicit user confirmation to persist a candidate memory to Walrus Memory Mainnet.
+- `POST /remember` stores an explicitly submitted memory and returns its
+  durable operation state.
+- `POST /recall` performs semantic recall in the authenticated user's
+  namespace. The backend removes results whose locally owned blobs are in
+  Trash or have permanent deletion in progress before returning them.
+- `GET /records/active` and `GET /records/trash` list confirmed memories from
+  the corresponding owner-scoped folder.
+- `DELETE /operations/{operation_id}` moves an owned confirmed memory to
+  recoverable Trash. It does not delete the Walrus blob.
+- `POST /operations/{operation_id}/restore` restores an owned trashed memory
+  unless permanent deletion has started.
+- `POST /operations/{operation_id}/permanent-delete` checks the existing
+  Walrus capability. It currently returns `501 unsupported_operation`; it
+  does not alter local state or delete remote data.
 
-#### Request Body
-```json
-{
-  "text": "Portfolio submission target is 2026-11-06.",
-  "category": "commitments",
-  "type": "commitment",
-  "user_id": "usr_default"
-}
-```
-
-#### Response `202 Accepted`
-```json
-{
-  "status": "confirmed",
-  "memory_id": "mem_walrus_1829",
-  "blob_id": "walrus_blob_9829312019",
-  "stored_at": "2026-10-28T01:52:00Z"
-}
-```
+Trash is user-controlled by default. The nullable
+`users.memory_trash_retention_days` field reserves `30` for a future opt-in
+auto-empty policy; no automatic deletion job exists in this phase.
 
 ---
 

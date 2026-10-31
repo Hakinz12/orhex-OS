@@ -66,6 +66,8 @@ def _migrate_memory_sync_records(connection) -> None:
         "last_error": "TEXT",
         "attempted_at": timestamp_type,
         "updated_at": timestamp_type,
+        "trashed_at": timestamp_type,
+        "permanent_delete_started_at": timestamp_type,
     }
     for name, definition in additions.items():
         if name not in columns:
@@ -114,6 +116,10 @@ def _migrate_memory_sync_records(connection) -> None:
     connection.exec_driver_sql(
         "CREATE INDEX IF NOT EXISTS ix_memory_sync_records_namespace "
         "ON memory_sync_records (namespace)"
+    )
+    connection.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_memory_sync_records_user_trash "
+        "ON memory_sync_records (user_id, trashed_at)"
     )
 
     if connection.dialect.name == "sqlite":
@@ -184,6 +190,40 @@ def _migrate_user_access_tokens(connection) -> None:
         )
 
 
+def _migrate_user_memory_trash_retention(connection) -> None:
+    """Add an opt-in retention setting; NULL keeps Trash user-controlled."""
+    inspector = inspect(connection)
+    if "users" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("users")}
+    if "memory_trash_retention_days" not in columns:
+        connection.exec_driver_sql(
+            "ALTER TABLE users ADD COLUMN memory_trash_retention_days INTEGER"
+        )
+    if connection.dialect.name == "sqlite":
+        for action in ("INSERT", "UPDATE"):
+            connection.exec_driver_sql(
+                f"CREATE TRIGGER IF NOT EXISTS "
+                f"trg_users_memory_trash_retention_{action.lower()} "
+                f"BEFORE {action} ON users "
+                "WHEN NEW.memory_trash_retention_days IS NOT NULL "
+                "AND NEW.memory_trash_retention_days != 30 "
+                "BEGIN SELECT RAISE(ABORT, 'invalid memory trash retention'); END"
+            )
+    elif connection.dialect.name == "postgresql":
+        constraints = inspector.get_check_constraints("users")
+        if not any(
+            item["name"] == "ck_users_memory_trash_retention_days"
+            for item in constraints
+        ):
+            connection.exec_driver_sql(
+                "ALTER TABLE users ADD CONSTRAINT "
+                "ck_users_memory_trash_retention_days CHECK "
+                "(memory_trash_retention_days IS NULL "
+                "OR memory_trash_retention_days = 30)"
+            )
+
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Dependency for providing a transactional async database session."""
     async with AsyncSessionLocal() as session:
@@ -201,3 +241,4 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_migrate_memory_sync_records)
         await conn.run_sync(_migrate_user_access_tokens)
+        await conn.run_sync(_migrate_user_memory_trash_retention)

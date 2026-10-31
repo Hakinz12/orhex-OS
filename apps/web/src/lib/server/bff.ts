@@ -4,13 +4,14 @@ import {
   callBackend,
   clearedSessionCookieOptions,
   safeErrorResponse,
+  safeMemoryList,
   safeMemoryOperation,
   safeReadiness,
   safeRecall,
   sessionCookieName,
 } from "./bff-core.mjs";
 
-type ResponseKind = "status" | "operation" | "recall";
+type ResponseKind = "status" | "operation" | "recall" | "memory_list";
 
 export function jsonError(status: number, error: string, message: string) {
   return NextResponse.json(
@@ -32,7 +33,7 @@ export async function readSessionToken() {
 export async function proxyMemoryOperation(
   token: string,
   path: string,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "DELETE",
   responseKind: ResponseKind,
   body?: Record<string, unknown>,
 ) {
@@ -55,6 +56,7 @@ export async function proxyMemoryOperation(
   let safePayload: unknown;
   if (responseKind === "status") safePayload = safeReadiness(payload);
   else if (responseKind === "operation") safePayload = safeMemoryOperation(payload);
+  else if (responseKind === "memory_list") safePayload = safeMemoryList(payload);
   else safePayload = safeRecall(payload);
 
   if (response.status === 401) {

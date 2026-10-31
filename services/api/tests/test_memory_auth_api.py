@@ -20,7 +20,7 @@ from app.core.database import (
 from app.main import app
 from app.core.rate_limit import SensitiveEndpointRateLimiter
 from app.core.config import settings
-from app.models.domain import User, UserAccessToken
+from app.models.domain import MemorySyncRecord, User, UserAccessToken, utc_now
 from app.services.memory_persistence import namespace_for_user
 
 
@@ -42,6 +42,7 @@ class FakeWalrus:
         self.recall = AsyncMock(return_value=[])
         self.get_remember_status = AsyncMock(side_effect=self._get_status)
         self.check_readiness = AsyncMock(return_value=self.health_result)
+        self.delete_memory = AsyncMock(side_effect=self._delete_memory)
 
     async def _remember(self, **kwargs):
         if isinstance(self.write_result, Exception):
@@ -50,6 +51,16 @@ class FakeWalrus:
 
     async def _get_status(self, _job_id):
         return self.reconciliation_result
+
+    async def _delete_memory(self, **kwargs):
+        return {
+            "success": False,
+            "status": "unsupported",
+            "supported": False,
+            "namespace": kwargs.get("namespace"),
+            "memory_id": kwargs.get("memory_id"),
+            "error": "The configured Walrus deployment does not support the official Security Delete API.",
+        }
 
 
 @pytest.fixture
@@ -115,12 +126,17 @@ async def test_authentication_is_required_for_memory_and_status_operations(api_h
         json={"query": "hello"},
         headers=bearer("orh_invalid-token"),
     )
+    unauthorized_delete = await api_harness.client.delete(
+        "/api/v1/memory/operations/operation-1"
+    )
 
     assert missing.status_code == 401
     assert missing.headers["www-authenticate"] == "Bearer"
     assert invalid.status_code == 401
+    assert unauthorized_delete.status_code == 401
     assert missing.json()["error"] == "unauthenticated"
     api_harness.walrus.recall.assert_not_awaited()
+    api_harness.walrus.delete_memory.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -491,19 +507,280 @@ async def test_database_write_failure_is_reported_without_walrus_call(api_harnes
 
 
 @pytest.mark.asyncio
-async def test_unsupported_delete_checks_ownership_and_reports_not_implemented(api_harness):
-    _, token = await provision(api_harness)
+async def test_soft_delete_is_owned_idempotent_and_does_not_call_walrus(api_harness):
+    user_id, token = await provision(api_harness)
     created = await api_harness.client.post(
         "/api/v1/memory/remember",
         headers=bearer(token),
         json={"text": "A locally owned memory."},
     )
-    result = await api_harness.client.delete(
-        f"/api/v1/memory/operations/{created.json()['operation_id']}",
+    record_id = created.json()["operation_id"]
+    first = await api_harness.client.delete(
+        f"/api/v1/memory/operations/{record_id}",
         headers=bearer(token),
     )
-    assert result.status_code == 501
-    assert result.json()["error"] == "unsupported_operation"
+    second = await api_harness.client.delete(
+        f"/api/v1/memory/operations/{record_id}",
+        headers=bearer(token),
+    )
+    assert first.status_code == second.status_code == 200
+    assert first.json()["trashed_at"] is not None
+    assert second.json()["trashed_at"] == first.json()["trashed_at"]
+    assert first.json()["operation_id"] == record_id
+    assert first.json()["namespace"] == namespace_for_user(user_id)
+    api_harness.walrus.delete_memory.assert_not_awaited()
+
+    active = await api_harness.client.get(
+        "/api/v1/memory/records/active",
+        headers=bearer(token),
+    )
+    trash = await api_harness.client.get(
+        "/api/v1/memory/records/trash",
+        headers=bearer(token),
+    )
+    assert active.status_code == trash.status_code == 200
+    assert active.json()["memories"] == []
+    assert [item["operation_id"] for item in trash.json()["memories"]] == [record_id]
+
+
+@pytest.mark.asyncio
+async def test_cross_user_cannot_trash_or_restore_memory(api_harness):
+    _, owner_token = await provision(api_harness)
+    _, other_token = await provision(api_harness)
+    created = await api_harness.client.post(
+        "/api/v1/memory/remember",
+        headers=bearer(owner_token),
+        json={"text": "Owned memory remains private."},
+    )
+    record_id = created.json()["operation_id"]
+
+    trashed = await api_harness.client.delete(
+        f"/api/v1/memory/operations/{record_id}",
+        headers=bearer(other_token),
+    )
+    restored = await api_harness.client.post(
+        f"/api/v1/memory/operations/{record_id}/restore",
+        headers=bearer(other_token),
+    )
+    assert trashed.status_code == restored.status_code == 404
+    assert api_harness.walrus.delete_memory.assert_not_awaited() is None
+
+
+@pytest.mark.asyncio
+async def test_cross_user_cannot_list_or_permanently_delete_memory(api_harness):
+    _, owner_token = await provision(api_harness)
+    _, other_token = await provision(api_harness)
+    created = await api_harness.client.post(
+        "/api/v1/memory/remember",
+        headers=bearer(owner_token),
+        json={"text": "Only the owner can list or delete this."},
+    )
+    record_id = created.json()["operation_id"]
+    await api_harness.client.delete(
+        f"/api/v1/memory/operations/{record_id}",
+        headers=bearer(owner_token),
+    )
+
+    active = await api_harness.client.get(
+        "/api/v1/memory/records/active",
+        headers=bearer(other_token),
+    )
+    trash = await api_harness.client.get(
+        "/api/v1/memory/records/trash",
+        headers=bearer(other_token),
+    )
+    permanent = await api_harness.client.post(
+        f"/api/v1/memory/operations/{record_id}/permanent-delete",
+        headers=bearer(other_token),
+    )
+
+    assert active.status_code == trash.status_code == 200
+    assert active.json()["memories"] == []
+    assert trash.json()["memories"] == []
+    assert permanent.status_code == 404
+    api_harness.walrus.delete_memory.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_trash_is_rejected_after_permanent_delete_has_started(api_harness):
+    _, token = await provision(api_harness)
+    created = await api_harness.client.post(
+        "/api/v1/memory/remember",
+        headers=bearer(token),
+        json={"text": "This memory cannot return to Trash."},
+    )
+    record_id = created.json()["operation_id"]
+    async with api_harness.factory() as session:
+        record = await session.get(MemorySyncRecord, record_id)
+        record.trashed_at = utc_now()
+        record.permanent_delete_started_at = utc_now()
+        await session.commit()
+
+    response = await api_harness.client.delete(
+        f"/api/v1/memory/operations/{record_id}",
+        headers=bearer(token),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"] == "memory_state_conflict"
+
+
+@pytest.mark.asyncio
+async def test_recall_excludes_permanent_delete_started_memories(api_harness):
+    _, token = await provision(api_harness)
+    created = await api_harness.client.post(
+        "/api/v1/memory/remember",
+        headers=bearer(token),
+        json={"text": "This memory is being permanently deleted."},
+    )
+    record_id = created.json()["operation_id"]
+    async with api_harness.factory() as session:
+        record = await session.get(MemorySyncRecord, record_id)
+        record.permanent_delete_started_at = utc_now()
+        await session.commit()
+    api_harness.walrus.recall.return_value = [
+        {
+            "blob_id": created.json()["blob_id"],
+            "text": "This memory is being permanently deleted.",
+            "distance": 0.1,
+            "namespace": created.json()["namespace"],
+        }
+    ]
+
+    response = await api_harness.client.post(
+        "/api/v1/memory/recall",
+        headers=bearer(token),
+        json={"query": "find the memory"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"] == []
+
+
+@pytest.mark.asyncio
+async def test_restore_is_idempotent_and_permanent_delete_stays_unsupported(api_harness):
+    _, token = await provision(api_harness)
+    created = await api_harness.client.post(
+        "/api/v1/memory/remember",
+        headers=bearer(token),
+        json={"text": "A memory that can be restored."},
+    )
+    record_id = created.json()["operation_id"]
+    await api_harness.client.delete(
+        f"/api/v1/memory/operations/{record_id}",
+        headers=bearer(token),
+    )
+
+    first = await api_harness.client.post(
+        f"/api/v1/memory/operations/{record_id}/restore",
+        headers=bearer(token),
+    )
+    second = await api_harness.client.post(
+        f"/api/v1/memory/operations/{record_id}/restore",
+        headers=bearer(token),
+    )
+    assert first.status_code == second.status_code == 200
+    assert first.json()["trashed_at"] is None
+    assert second.json()["trashed_at"] is None
+
+    await api_harness.client.delete(
+        f"/api/v1/memory/operations/{record_id}",
+        headers=bearer(token),
+    )
+    permanent = await api_harness.client.post(
+        f"/api/v1/memory/operations/{record_id}/permanent-delete",
+        headers=bearer(token),
+    )
+    assert permanent.status_code == 501
+    assert permanent.json()["error"] == "unsupported_operation"
+    assert api_harness.walrus.delete_memory.await_args.kwargs == {
+        "namespace": created.json()["namespace"],
+        "memory_id": created.json()["blob_id"],
+    }
+
+    active = await api_harness.client.get(
+        "/api/v1/memory/records/active",
+        headers=bearer(token),
+    )
+    trash = await api_harness.client.get(
+        "/api/v1/memory/records/trash",
+        headers=bearer(token),
+    )
+    assert active.json()["memories"] == []
+    assert len(trash.json()["memories"]) == 1
+    assert trash.json()["memories"][0]["text"] == "A memory that can be restored."
+
+
+@pytest.mark.asyncio
+async def test_restore_is_rejected_after_permanent_delete_has_started(api_harness):
+    _, token = await provision(api_harness)
+    created = await api_harness.client.post(
+        "/api/v1/memory/remember",
+        headers=bearer(token),
+        json={"text": "This memory is in a permanent-delete state."},
+    )
+    record_id = created.json()["operation_id"]
+    await api_harness.client.delete(
+        f"/api/v1/memory/operations/{record_id}",
+        headers=bearer(token),
+    )
+    async with api_harness.factory() as session:
+        record = await session.get(MemorySyncRecord, record_id)
+        record.permanent_delete_started_at = utc_now()
+        await session.commit()
+
+    response = await api_harness.client.post(
+        f"/api/v1/memory/operations/{record_id}/restore",
+        headers=bearer(token),
+    )
+    assert response.status_code == 409
+    assert response.json()["error"] == "memory_state_conflict"
+
+
+@pytest.mark.asyncio
+async def test_recall_excludes_locally_trashed_blobs(api_harness):
+    _, token = await provision(api_harness)
+    first = await api_harness.client.post(
+        "/api/v1/memory/remember",
+        headers=bearer(token),
+        json={"text": "A memory that will be trashed."},
+    )
+    api_harness.walrus.write_result = {
+        "status": "confirmed",
+        "blob_id": "blob-active",
+        "memory_id": "memory-active",
+    }
+    active = await api_harness.client.post(
+        "/api/v1/memory/remember",
+        headers=bearer(token),
+        json={"text": "A memory that stays active."},
+    )
+    await api_harness.client.delete(
+        f"/api/v1/memory/operations/{first.json()['operation_id']}",
+        headers=bearer(token),
+    )
+    api_harness.walrus.recall.return_value = [
+        {
+            "blob_id": first.json()["blob_id"],
+            "text": "A memory that will be trashed.",
+            "distance": 0.1,
+            "namespace": first.json()["namespace"],
+        },
+        {
+            "blob_id": active.json()["blob_id"],
+            "text": "A memory that stays active.",
+            "distance": 0.2,
+            "namespace": active.json()["namespace"],
+        },
+    ]
+
+    response = await api_harness.client.post(
+        "/api/v1/memory/recall",
+        headers=bearer(token),
+        json={"query": "which memories are active"},
+    )
+    assert response.status_code == 200
+    assert [hit["blob_id"] for hit in response.json()["results"]] == ["blob-active"]
 
 
 @pytest.mark.asyncio
@@ -538,6 +815,8 @@ async def test_request_validation_and_response_contract(api_harness):
         "metadata",
         "created_at",
         "confirmed_at",
+        "trashed_at",
+        "permanent_delete_started_at",
         "error",
     }
 

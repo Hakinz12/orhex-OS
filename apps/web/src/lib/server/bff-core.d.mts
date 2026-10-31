@@ -28,12 +28,19 @@ export function clearedSessionCookieOptions(env?: NodeJS.ProcessEnv): {
   maxAge: 0;
 };
 export function sameOriginRequest(request: Request): boolean;
+export function memoryRouteAccess(
+  request: Request,
+  token: string | null,
+  requiresSameOrigin?: boolean,
+):
+  | { ok: true; token: string }
+  | { ok: false; status: 401 | 403 };
 export function backendBaseUrl(env?: NodeJS.ProcessEnv): string;
 export function callBackend(
   path: string,
   options?: {
     token?: string;
-    method?: "GET" | "POST";
+    method?: "GET" | "POST" | "DELETE";
     body?: Record<string, unknown>;
     env?: NodeJS.ProcessEnv;
     fetchImpl?: typeof fetch;
@@ -51,6 +58,11 @@ export function validateRememberBody(value: unknown): Record<string, unknown> | 
 export function validateRecallBody(value: unknown): Record<string, unknown> | null;
 export function safeReadiness(payload: unknown): Record<string, string | boolean> | null;
 export function safeMemoryOperation(payload: unknown): Record<string, unknown> | null;
+export function safeMemoryList(payload: unknown): {
+  folder: "active" | "trash";
+  total: number;
+  memories: Array<Record<string, unknown>>;
+} | null;
 export function safeRecall(payload: unknown): {
   query: string;
   total: number;

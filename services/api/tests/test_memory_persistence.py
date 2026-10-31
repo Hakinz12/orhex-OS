@@ -1,4 +1,5 @@
 """Database-backed tests for durable Walrus memory operations."""
+import asyncio
 import json
 from datetime import timedelta
 from unittest.mock import AsyncMock
@@ -12,18 +13,22 @@ from app.core.database import (
     Base,
     _enable_sqlite_foreign_keys,
     _migrate_memory_sync_records,
+    _migrate_user_memory_trash_retention,
 )
 from app.models.domain import MemorySyncRecord, User, utc_now
 from app.services.memory_persistence import (
     MemoryOwnerNotFoundError,
     MemoryPersistenceError,
     MemoryWriteUncertainError,
+    active_memory_context_for_user,
     get_owned_memory,
     namespace_for_user,
     persist_memory,
     recall_for_user,
     reconcile_memory,
     recover_pending_operations,
+    restore_memory,
+    trash_memory,
 )
 
 
@@ -342,6 +347,95 @@ async def test_user_and_namespace_isolation(db_session):
 
 
 @pytest.mark.asyncio
+async def test_active_memory_context_excludes_trashed_memories(db_session):
+    await add_user(db_session, "owner-1")
+    walrus = FakeWalrus()
+    trashed = await persist_memory(
+        db_session, walrus, user_id="owner-1", text="Must not enter AI context."
+    )
+    await persist_memory(
+        db_session, walrus, user_id="owner-1", text="This remains active context."
+    )
+    trashed.trashed_at = utc_now()
+    await db_session.commit()
+
+    context = await active_memory_context_for_user(db_session, user_id="owner-1")
+
+    assert context == ["This remains active context."]
+
+
+@pytest.mark.asyncio
+async def test_active_memory_context_excludes_permanent_delete_started_memories(db_session):
+    await add_user(db_session, "owner-1")
+    walrus = FakeWalrus()
+    deleting = await persist_memory(
+        db_session, walrus, user_id="owner-1", text="Must not enter AI context."
+    )
+    await persist_memory(
+        db_session, walrus, user_id="owner-1", text="This remains active context."
+    )
+    deleting.permanent_delete_started_at = utc_now()
+    await db_session.commit()
+
+    context = await active_memory_context_for_user(db_session, user_id="owner-1")
+
+    assert context == ["This remains active context."]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_trash_and_restore_transitions_are_atomic(tmp_path):
+    database_path = tmp_path / "memory-lifecycle-concurrency.db"
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{database_path}",
+        connect_args={"timeout": 10},
+    )
+    event.listen(engine.sync_engine, "connect", _enable_sqlite_foreign_keys)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(
+        bind=engine, class_=AsyncSession, expire_on_commit=False
+    )
+    walrus = FakeWalrus()
+    try:
+        async with factory() as session:
+            await add_user(session, "owner-1")
+            record = await persist_memory(
+                session, walrus, user_id="owner-1", text="Concurrent lifecycle test."
+            )
+            record_id = record.id
+            await trash_memory(session, user_id="owner-1", record_id=record_id)
+
+        start = asyncio.Event()
+
+        async def transition(action):
+            async with factory() as session:
+                await start.wait()
+                record = await action(
+                    session, user_id="owner-1", record_id=record_id
+                )
+                return action.__name__, record.trashed_at is not None
+
+        trash_task = asyncio.create_task(transition(trash_memory))
+        restore_task = asyncio.create_task(transition(restore_memory))
+        start.set()
+        results = await asyncio.gather(
+            trash_task, restore_task, return_exceptions=True
+        )
+
+        assert all(not isinstance(result, Exception) for result in results)
+        states = dict(results)
+        assert states == {"trash_memory": True, "restore_memory": False}
+        async with factory() as session:
+            final = await session.get(MemorySyncRecord, record_id)
+            assert final is not None
+            assert final.user_id == "owner-1"
+            assert final.permanent_delete_started_at is None
+            assert (final.trashed_at is not None) in states.values()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_unknown_user_is_rejected_before_walrus_write(db_session):
     walrus = FakeWalrus()
 
@@ -414,7 +508,8 @@ async def test_existing_database_schema_is_upgraded_in_place():
         migrated = (
             await connection.execute(
                 text(
-                    "SELECT status, idempotency_key, namespace "
+                    "SELECT status, idempotency_key, namespace, trashed_at, "
+                    "permanent_delete_started_at "
                     "FROM memory_sync_records WHERE id = 'old-op'"
                 )
             )
@@ -423,4 +518,38 @@ async def test_existing_database_schema_is_upgraded_in_place():
     assert migrated.status == "pending"
     assert migrated.idempotency_key == "old-op"
     assert migrated.namespace == "orhrex-personal-memory"
+    assert migrated.trashed_at is None
+    assert migrated.permanent_delete_started_at is None
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_existing_user_schema_gets_optional_trash_retention_policy():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "CREATE TABLE users (id VARCHAR(64) PRIMARY KEY, preferred_name VARCHAR(128))"
+            )
+        )
+        await connection.execute(
+            text("INSERT INTO users (id, preferred_name) VALUES ('owner-1', 'Test')")
+        )
+        await connection.run_sync(_migrate_user_memory_trash_retention)
+        default_value = (
+            await connection.execute(
+                text(
+                    "SELECT memory_trash_retention_days FROM users WHERE id = 'owner-1'"
+                )
+            )
+        ).scalar_one()
+        with pytest.raises(IntegrityError):
+            await connection.execute(
+                text(
+                    "UPDATE users SET memory_trash_retention_days = 7 WHERE id = 'owner-1'"
+                )
+            )
+        await connection.rollback()
+
+    assert default_value is None
     await engine.dispose()

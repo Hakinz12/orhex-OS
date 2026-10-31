@@ -1,6 +1,7 @@
 """Authenticated Walrus memory operations."""
 import json
 import logging
+from datetime import timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -16,12 +17,16 @@ from app.models.domain import MemorySyncRecord, User
 from app.services.memory_persistence import (
     MemoryOwnerNotFoundError,
     MemoryPersistenceError,
+    MemoryStateConflictError,
     MemoryWriteUncertainError,
+    list_memories_for_user,
     get_owned_memory,
     namespace_for_user,
     persist_memory,
     recall_for_user,
     reconcile_memory,
+    restore_memory,
+    trash_memory,
 )
 
 logger = logging.getLogger("orhex.api.memory")
@@ -63,7 +68,28 @@ class MemoryOperationResponse(BaseModel):
     metadata: Dict[str, Any]
     created_at: str
     confirmed_at: Optional[str] = None
+    trashed_at: Optional[str] = None
+    permanent_delete_started_at: Optional[str] = None
     error: Optional[str] = None
+
+
+class MemoryListItem(BaseModel):
+    operation_id: str
+    text: str
+    status: str
+    blob_id: Optional[str] = None
+    category: str
+    memory_type: str
+    created_at: str
+    confirmed_at: Optional[str] = None
+    trashed_at: Optional[str] = None
+    permanent_delete_started_at: Optional[str] = None
+
+
+class MemoryListResponse(BaseModel):
+    folder: str
+    total: int
+    memories: List[MemoryListItem]
 
 
 class RecallHit(BaseModel):
@@ -92,9 +118,38 @@ def _record_response(record: MemorySyncRecord) -> MemoryOperationResponse:
         category=record.category,
         memory_type=record.memory_type,
         metadata=json.loads(record.metadata_json or "{}"),
-        created_at=record.created_at.isoformat(),
-        confirmed_at=record.confirmed_at.isoformat() if record.confirmed_at else None,
+        created_at=_isoformat_timestamp(record.created_at),
+        confirmed_at=_isoformat_timestamp(record.confirmed_at),
+        trashed_at=_isoformat_timestamp(record.trashed_at),
+        permanent_delete_started_at=_isoformat_timestamp(
+            record.permanent_delete_started_at
+        ),
         error=record.last_error,
+    )
+
+
+def _isoformat_timestamp(value):
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
+
+
+def _memory_list_item(record: MemorySyncRecord) -> MemoryListItem:
+    return MemoryListItem(
+        operation_id=record.id,
+        text=record.text,
+        status=record.status,
+        blob_id=record.walrus_blob_id,
+        category=record.category,
+        memory_type=record.memory_type,
+        created_at=_isoformat_timestamp(record.created_at),
+        confirmed_at=_isoformat_timestamp(record.confirmed_at),
+        trashed_at=_isoformat_timestamp(record.trashed_at),
+        permanent_delete_started_at=_isoformat_timestamp(
+            record.permanent_delete_started_at
+        ),
     )
 
 
@@ -224,6 +279,33 @@ async def recall_memories(
 
 
 @router.get(
+    "/records/{folder}",
+    response_model=MemoryListResponse,
+    responses={401: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+)
+async def list_memory_records(
+    folder: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """List only this user's confirmed active memories or Trash records."""
+    if folder not in {"active", "trash"}:
+        return _error(404, "not_found", "The requested memory folder was not found.")
+    try:
+        records = await list_memories_for_user(db, user_id=user.id, folder=folder)
+    except MemoryOwnerNotFoundError:
+        return _error(403, "invalid_owner", "Authenticated user is not provisioned.")
+    except MemoryPersistenceError as exc:
+        logger.error("Memory list failed: %s", type(exc).__name__)
+        return _error(503, "database_error", str(exc))
+    return MemoryListResponse(
+        folder=folder,
+        total=len(records),
+        memories=[_memory_list_item(record) for record in records],
+    )
+
+
+@router.get(
     "/operations/{record_id}",
     response_model=MemoryOperationResponse,
     responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
@@ -291,10 +373,11 @@ async def reconcile_operation(
 
 @router.delete(
     "/operations/{record_id}",
+    response_model=MemoryOperationResponse,
     responses={
         401: {"model": ErrorResponse},
         404: {"model": ErrorResponse},
-        501: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
         503: {"model": ErrorResponse},
     },
 )
@@ -303,17 +386,112 @@ async def delete_memory_operation(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Explicitly report deletion as unsupported after checking record ownership."""
+    try:
+        record = await trash_memory(db, user_id=user.id, record_id=record_id)
+    except MemoryPersistenceError as exc:
+        if isinstance(exc, MemoryStateConflictError):
+            return _error(409, "memory_state_conflict", str(exc), exc.record_id)
+        logger.error("Memory trash operation failed: %s", type(exc).__name__)
+        return _error(503, "database_error", str(exc), exc.record_id)
+    if record is None:
+        return _error(404, "not_found", "Memory operation was not found.")
+    return _record_response(record)
+
+
+@router.post(
+    "/operations/{record_id}/restore",
+    response_model=MemoryOperationResponse,
+    responses={401: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+)
+async def restore_memory_operation(
+    record_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Restore a trashed memory only for its authenticated owner."""
+    try:
+        record = await restore_memory(db, user_id=user.id, record_id=record_id)
+    except MemoryPersistenceError as exc:
+        if isinstance(exc, MemoryStateConflictError):
+            return _error(409, "memory_state_conflict", str(exc), exc.record_id)
+        logger.error("Memory restore failed: %s", type(exc).__name__)
+        return _error(503, "database_error", str(exc), exc.record_id)
+    if record is None:
+        return _error(404, "not_found", "Memory operation was not found.")
+    return _record_response(record)
+
+
+@router.post(
+    "/operations/{record_id}/permanent-delete",
+    responses={
+        401: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        501: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+    },
+)
+async def permanently_delete_memory_operation(
+    record_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Check permanent-delete support without deleting remote data in Phase 1."""
     try:
         record = await get_owned_memory(db, user_id=user.id, record_id=record_id)
     except MemoryPersistenceError as exc:
-        logger.error("Memory ownership lookup failed: %s", type(exc).__name__)
-        return _error(503, "database_error", str(exc))
+        logger.error("Permanent-delete ownership lookup failed: %s", type(exc).__name__)
+        return _error(503, "database_error", str(exc), exc.record_id)
     if record is None:
         return _error(404, "not_found", "Memory operation was not found.")
+    if record.trashed_at is None:
+        return _error(
+            409,
+            "memory_not_trashed",
+            "Only memories in Trash can be permanently deleted.",
+            record.id,
+        )
+    if record.permanent_delete_started_at is not None:
+        return _error(
+            409,
+            "permanent_delete_in_progress",
+            "Permanent deletion has already started; do not retry or restore this memory.",
+            record.id,
+        )
+    if not record.walrus_blob_id:
+        return _error(
+            409,
+            "memory_not_eligible",
+            "The memory has no confirmed Walrus blob ID and cannot be permanently deleted.",
+            record.id,
+        )
+    try:
+        result = await _walrus.delete_memory(
+            namespace=record.namespace,
+            memory_id=record.walrus_blob_id,
+        )
+    except Exception as exc:
+        logger.error(
+            "Walrus permanent-delete capability check failed: %s",
+            type(exc).__name__,
+        )
+        return _error(
+            503,
+            "capability_check_failed",
+            "Walrus permanent-delete support could not be verified.",
+            record.id,
+        )
+    if result.get("status") == "unsupported" or result.get("supported") is False:
+        return _error(
+            501,
+            "unsupported_operation",
+            "Walrus permanent deletion is unsupported. This memory remains in Trash and its remote data is unchanged.",
+            record.id,
+        )
+    logger.error("Walrus adapter returned an unexpected permanent-delete capability.")
     return _error(
         501,
         "unsupported_operation",
-        "The installed Walrus SDK does not support memory deletion.",
+        "Permanent deletion is not implemented in this phase; no deletion was performed.",
         record.id,
     )

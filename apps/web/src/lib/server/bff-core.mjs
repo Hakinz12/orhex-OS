@@ -55,6 +55,15 @@ export function sameOriginRequest(request) {
   }
 }
 
+export function memoryRouteAccess(request, token, requiresSameOrigin = false) {
+  if (requiresSameOrigin && !sameOriginRequest(request)) {
+    return { ok: false, status: 403 };
+  }
+  return token
+    ? { ok: true, token }
+    : { ok: false, status: 401 };
+}
+
 export function backendBaseUrl(env = process.env) {
   const configured =
     env.ORHEX_API_BASE_URL ||
@@ -85,8 +94,10 @@ function isAllowedBackendPath(path, method) {
   if (path === MEMORY_STATUS_PATH && method === "GET") return true;
   if (path === "/api/v1/memory/remember" && method === "POST") return true;
   if (path === "/api/v1/memory/recall" && method === "POST") return true;
+  if (/^\/api\/v1\/memory\/records\/(active|trash)$/.test(path) && method === "GET") return true;
+  if (/^\/api\/v1\/memory\/operations\/[A-Za-z0-9-]{1,64}$/.test(path) && method === "DELETE") return true;
   return /^\/api\/v1\/memory\/operations\/[A-Za-z0-9-]{1,64}$/.test(path) && method === "GET"
-    || /^\/api\/v1\/memory\/operations\/[A-Za-z0-9-]{1,64}\/reconcile$/.test(path) && method === "POST";
+    || /^\/api\/v1\/memory\/operations\/[A-Za-z0-9-]{1,64}\/(reconcile|restore|permanent-delete)$/.test(path) && method === "POST";
 }
 
 export async function callBackend(
@@ -210,11 +221,45 @@ export function safeMemoryOperation(payload) {
   if (typeof payload.status !== "string" || typeof payload.operation_id !== "string") return null;
   const allowed = [
     "status", "operation_id", "blob_id", "memory_id", "category",
-    "memory_type", "metadata", "created_at", "confirmed_at",
+    "memory_type", "metadata", "created_at", "confirmed_at", "trashed_at",
+    "permanent_delete_started_at", "error",
   ];
   return Object.fromEntries(
     Object.entries(payload).filter(([key]) => allowed.includes(key)),
   );
+}
+
+export function safeMemoryList(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  if (
+    !["active", "trash"].includes(payload.folder) ||
+    !Array.isArray(payload.memories) ||
+    !Number.isInteger(payload.total) ||
+    payload.total !== payload.memories.length
+  ) return null;
+  if (payload.memories.some((item) => !item || typeof item !== "object" || Array.isArray(item))) return null;
+  const memories = payload.memories.map((item) => ({
+    operation_id: item.operation_id,
+    text: item.text,
+    status: item.status,
+    blob_id: item.blob_id,
+    category: item.category,
+    memory_type: item.memory_type,
+    created_at: item.created_at,
+    confirmed_at: item.confirmed_at,
+    trashed_at: item.trashed_at,
+    permanent_delete_started_at: item.permanent_delete_started_at,
+  }));
+  if (memories.some((item) =>
+    typeof item.operation_id !== "string" ||
+    typeof item.text !== "string" ||
+    item.status !== "confirmed" ||
+    typeof item.category !== "string" ||
+    typeof item.memory_type !== "string" ||
+    typeof item.created_at !== "string" ||
+    (item.blob_id !== null && typeof item.blob_id !== "string")
+  )) return null;
+  return { folder: payload.folder, total: memories.length, memories };
 }
 
 export function safeRecall(payload) {
@@ -242,7 +287,7 @@ export function safeErrorResponse(status) {
   if (status === 409) return { status: 409, body: { error: "conflict", message: "The request conflicts with an existing operation." } };
   if (status === 422) return { status: 422, body: { error: "invalid_request", message: "The request was rejected by the memory service." } };
   if (status === 429) return { status: 429, body: { error: "rate_limited", message: "Too many requests. Please retry shortly." } };
-  if (status === 501) return { status: 501, body: { error: "unsupported_operation", message: "This operation is not supported by the memory service." } };
+  if (status === 501) return { status: 501, body: { error: "unsupported_operation", message: "Walrus permanent deletion is unsupported; the memory remains in Trash." } };
   if (status === 502) return { status: 502, body: { error: "memory_service_error", message: "The memory service could not complete the request." } };
   return { status: 503, body: { error: "service_unavailable", message: "The memory service is temporarily unavailable." } };
 }

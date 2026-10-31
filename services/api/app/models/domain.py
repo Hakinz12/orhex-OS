@@ -28,11 +28,18 @@ def utc_now() -> datetime:
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint(
+            "memory_trash_retention_days IS NULL OR memory_trash_retention_days = 30",
+            name="ck_users_memory_trash_retention_days",
+        ),
+    )
 
     id = Column(String(64), primary_key=True, default=generate_uuid)
     preferred_name = Column(String(128), nullable=True)
     reminder_style = Column(String(64), default="concise")  # concise, detailed, proactive
     sui_address = Column(String(128), nullable=True)
+    memory_trash_retention_days = Column(Integer, nullable=True, default=None)
     created_at = Column(DateTime(timezone=True), default=utc_now)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
@@ -119,6 +126,7 @@ class MemorySyncRecord(Base):
             unique=True,
         ),
         Index("ix_memory_sync_records_user_status", "user_id", "status"),
+        Index("ix_memory_sync_records_user_trash", "user_id", "trashed_at"),
     )
 
     id = Column(String(64), primary_key=True, default=generate_uuid)
@@ -157,6 +165,8 @@ class MemorySyncRecord(Base):
         server_default=func.now(),
     )
     confirmed_at = Column(DateTime(timezone=True), nullable=True)
+    trashed_at = Column(DateTime(timezone=True), nullable=True)
+    permanent_delete_started_at = Column(DateTime(timezone=True), nullable=True)
 
     user = relationship("User", back_populates="memories")
 

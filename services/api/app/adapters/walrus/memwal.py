@@ -416,9 +416,17 @@ class MemWalAdapter(BaseWalrusMemory):
         }
 
     async def delete_memory(self, namespace: str, memory_id: str) -> Dict[str, Any]:
-        """Report that SDK 0.2.1 does not provide memory deletion."""
+        """Report the capability honestly: the current MemWal deployment does not expose the
+        official Walrus Security Delete API required for permanent wallet-authenticated deletes.
+        """
         return {
             "success": False,
             "status": "unsupported",
-            "error": "memwal 0.2.1 does not expose memory deletion.",
+            "supported": False,
+            "namespace": namespace,
+            "memory_id": memory_id,
+            "error": (
+                "The configured Walrus deployment does not expose the official Security "
+                "Delete API for permanent memory deletion."
+            ),
         }

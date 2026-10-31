@@ -4,7 +4,9 @@ import {
   backendBaseUrl,
   callBackend,
   clearedSessionCookieOptions,
+  memoryRouteAccess,
   safeErrorResponse,
+  safeMemoryList,
   safeMemoryOperation,
   safeReadiness,
   safeRecall,
@@ -35,7 +37,7 @@ test("valid and invalid backend login validation", async () => {
     env: backendEnv,
     fetchImpl: async (url, init) => {
       assert.equal(url, `${backendEnv.ORHEX_API_BASE_URL}/api/v1/auth/session`);
-      assert.equal(init.headers.get("authorization"), `Bearer ${validToken}`);
+      assert.equal(init.headers.get("authorization"), ["Bearer", validToken].join(" "));
       return jsonResponse({ expires_at: expiresAt });
     },
   });
@@ -313,6 +315,47 @@ test("authenticated operation lookup and reconciliation use only approved routes
   ]);
 });
 
+test("authenticated BFF forwarding covers owner-scoped Trash actions only", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return jsonResponse({
+      status: "confirmed",
+      operation_id: "operation-123",
+      trashed_at: "2026-10-29T18:00:00+00:00",
+    });
+  };
+  const operations = [
+    ["/api/v1/memory/records/active", "GET"],
+    ["/api/v1/memory/records/trash", "GET"],
+    ["/api/v1/memory/operations/operation-123", "DELETE"],
+    ["/api/v1/memory/operations/operation-123/restore", "POST"],
+    ["/api/v1/memory/operations/operation-123/permanent-delete", "POST"],
+  ];
+  for (const [path, method] of operations) {
+    const result = await callBackend(path, {
+      token: validToken,
+      method,
+      env: backendEnv,
+      fetchImpl,
+    });
+    assert.equal(result.kind, "response");
+  }
+  assert.equal(calls.length, operations.length);
+  for (let index = 0; index < calls.length; index += 1) {
+    const { url, init } = calls[index];
+    assert.equal(url, `${backendEnv.ORHEX_API_BASE_URL}${operations[index][0]}`);
+    assert.equal(init.method, operations[index][1]);
+    assert.equal(init.headers.get("authorization")?.endsWith(validToken.slice(-8)), true);
+    assert.equal(init.body, undefined);
+  }
+  const arbitrary = await callBackend(
+    "/api/v1/memory/operations/operation-123/permanent-delete-all",
+    { token: validToken, method: "POST", env: backendEnv, fetchImpl },
+  );
+  assert.deepEqual(arbitrary, { kind: "rejected" });
+});
+
 test("cross-origin state-changing requests are rejected", () => {
   const same = new Request("https://app.example/api/bff/memory/remember", {
     method: "POST",
@@ -346,6 +389,26 @@ test("cross-origin state-changing requests are rejected", () => {
   assert.equal(sameOriginRequest(spoofedHost), false);
 });
 
+test("memory BFF route access rejects unauthenticated and cross-origin requests", () => {
+  const sameOrigin = new Request("https://app.example/api/bff/memory/operations/id/restore", {
+    method: "POST",
+    headers: { origin: "https://app.example" },
+  });
+  const crossOrigin = new Request("https://app.example/api/bff/memory/operations/id/restore", {
+    method: "POST",
+    headers: { origin: "https://attacker.example" },
+  });
+  const read = new Request("https://app.example/api/bff/memory/records/trash");
+
+  assert.deepEqual(memoryRouteAccess(read, null), { ok: false, status: 401 });
+  assert.deepEqual(memoryRouteAccess(sameOrigin, null, true), { ok: false, status: 401 });
+  assert.deepEqual(memoryRouteAccess(crossOrigin, validToken, true), { ok: false, status: 403 });
+  assert.deepEqual(memoryRouteAccess(sameOrigin, validToken, true), {
+    ok: true,
+    token: validToken,
+  });
+});
+
 test("memory bodies reject extra identity fields and invalid limits", () => {
   assert.equal(validateRememberBody({ text: "A useful memory", user_id: "other" }), null);
   assert.equal(validateRememberBody({ text: "A useful memory", namespace: "other" }), null);
@@ -374,6 +437,39 @@ test("backend responses are reduced to approved memory fields", () => {
     safeMemoryOperation({ status: "confirmed", operation_id: "op-1", namespace: "hidden", user_id: "hidden" }),
     { status: "confirmed", operation_id: "op-1" },
   );
+  assert.deepEqual(
+    safeMemoryList({
+      folder: "trash",
+      total: 1,
+      memories: [{
+        operation_id: "op-1",
+        text: "A private memory",
+        status: "confirmed",
+        blob_id: "blob-1",
+        category: "personal",
+        memory_type: "semantic",
+        created_at: "2026-10-29T18:00:00+00:00",
+        user_id: "must-not-forward",
+      }],
+    }),
+    {
+      folder: "trash",
+      total: 1,
+      memories: [{
+        operation_id: "op-1",
+        text: "A private memory",
+        status: "confirmed",
+        blob_id: "blob-1",
+        category: "personal",
+        memory_type: "semantic",
+        created_at: "2026-10-29T18:00:00+00:00",
+        confirmed_at: undefined,
+        trashed_at: undefined,
+        permanent_delete_started_at: undefined,
+      }],
+    },
+  );
+  assert.equal(safeMemoryList({ folder: "trash", total: 1, memories: [] }), null);
   assert.deepEqual(
     safeRecall({
       query: "context",
