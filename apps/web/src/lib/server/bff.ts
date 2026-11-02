@@ -8,7 +8,10 @@ import {
   safeMemoryOperation,
   safeReadiness,
   safeRecall,
+  parseSuiPagination,
+  safeSuiBackendResponse,
   sessionCookieName,
+  validateSuiWalletAddress,
 } from "./bff-core.mjs";
 
 type ResponseKind = "status" | "operation" | "recall" | "memory_list";
@@ -89,4 +92,35 @@ export async function proxyMemoryOperation(
     status: response.status,
     headers: { "Cache-Control": "no-store" },
   });
+}
+
+export async function proxySuiWalletData(
+  token: string,
+  request: Request,
+  address: string,
+  resource: "balances" | "objects",
+) {
+  if (!validateSuiWalletAddress(address)) {
+    return jsonError(422, "invalid_request", "The Sui wallet address is invalid.");
+  }
+  const query = parseSuiPagination(new URL(request.url).searchParams);
+  if (!query) {
+    return jsonError(422, "invalid_request", "The Sui pagination parameters are invalid.");
+  }
+
+  const path = `/api/v1/sui/wallet/${encodeURIComponent(address)}/${resource}`;
+  const result = await callBackend(path, { token, method: "GET", query });
+  if (result.kind === "unavailable") {
+    return jsonError(503, "service_unavailable", "The Sui service is temporarily unavailable.");
+  }
+  if (result.kind === "rejected") {
+    return jsonError(400, "invalid_request", "The Sui request is invalid.");
+  }
+  const safeResult = await safeSuiBackendResponse(result.response, resource);
+  const response = NextResponse.json(safeResult.body, {
+    status: safeResult.status,
+    headers: { "Cache-Control": "no-store" },
+  });
+  if (result.response.status === 401) return clearSessionCookie(response);
+  return response;
 }

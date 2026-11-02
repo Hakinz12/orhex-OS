@@ -10,9 +10,14 @@ import {
   safeMemoryOperation,
   safeReadiness,
   safeRecall,
+  parseSuiPagination,
+  safeSuiBackendResponse,
+  safeSuiBalances,
+  safeSuiObjects,
   sameOriginRequest,
   sessionCookieName,
   sessionCookieOptions,
+  validateSuiWalletAddress,
   validateBackendSession,
   validateRecallBody,
   validateRememberBody,
@@ -182,6 +187,175 @@ test("only approved backend paths can be called", async () => {
   });
   assert.deepEqual(result, { kind: "rejected" });
   assert.equal(called, false);
+});
+
+test("Sui BFF allowlist forwards only the two approved reads with the session bearer", async () => {
+  const address = `0x${"a".repeat(64)}`;
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, init });
+    return jsonResponse({});
+  };
+  const balancePath = `/api/v1/sui/wallet/${address}/balances`;
+  const objectsPath = `/api/v1/sui/wallet/${address}/objects`;
+
+  const balances = await callBackend(balancePath, {
+    token: validToken,
+    method: "GET",
+    query: { limit: 7, cursor: "opaque/cursor-1" },
+    env: backendEnv,
+    fetchImpl,
+  });
+  const objects = await callBackend(objectsPath, {
+    token: validToken,
+    method: "GET",
+    query: { limit: 20 },
+    env: backendEnv,
+    fetchImpl,
+  });
+
+  assert.equal(balances.kind, "response");
+  assert.equal(objects.kind, "response");
+  assert.equal(requests[0].url, `${backendEnv.ORHEX_API_BASE_URL}${balancePath}?limit=7&cursor=opaque%2Fcursor-1`);
+  assert.equal(requests[1].url, `${backendEnv.ORHEX_API_BASE_URL}${objectsPath}?limit=20`);
+  for (const { init } of requests) {
+    assert.equal(init.method, "GET");
+    assert.equal(init.headers.get("authorization"), ["Bearer", validToken].join(" "));
+    assert.equal(init.cache, "no-store");
+    assert.equal(init.redirect, "error");
+  }
+});
+
+test("Sui BFF rejects malformed addresses, query parameters, and arbitrary upstream paths", async () => {
+  const unauthenticated = new Request("https://app.example/api/sui/wallet/0x2/balances");
+  assert.deepEqual(memoryRouteAccess(unauthenticated, null), { ok: false, status: 401 });
+
+  assert.equal(validateSuiWalletAddress("0x2"), true);
+  assert.equal(validateSuiWalletAddress(`0x${"b".repeat(64)}`), true);
+  assert.equal(validateSuiWalletAddress("0x"), false);
+  assert.equal(validateSuiWalletAddress("0x12xz"), false);
+  assert.deepEqual(parseSuiPagination(new URLSearchParams("limit=5&cursor=opaque%2Fnext")), {
+    limit: 5,
+    cursor: "opaque/next",
+  });
+  assert.equal(parseSuiPagination(new URLSearchParams("limit=51")), null);
+  assert.equal(parseSuiPagination(new URLSearchParams("limit=2&other=x")), null);
+  assert.equal(parseSuiPagination(new URLSearchParams("cursor=a&cursor=b")), null);
+
+  let called = false;
+  for (const path of [
+    "/api/v1/sui/network",
+    "/api/v1/sui/wallet/0x2/transaction",
+    "/api/v1/sui/wallet/0x2/balances/extra",
+    "/api/v1/sui/wallet/0x2%2F..%2Fauth/session/balances",
+  ]) {
+    const result = await callBackend(path, {
+      token: validToken,
+      method: "GET",
+      env: backendEnv,
+      fetchImpl: async () => {
+        called = true;
+        return jsonResponse({});
+      },
+    });
+    assert.deepEqual(result, { kind: "rejected" });
+  }
+  const arbitraryQuery = await callBackend("/api/v1/sui/wallet/0x2/objects", {
+    token: validToken,
+    method: "GET",
+    query: { limit: 5, upstream: "https://attacker.example" },
+    env: backendEnv,
+    fetchImpl: async () => {
+      called = true;
+      return jsonResponse({});
+    },
+  });
+  assert.deepEqual(arbitraryQuery, { kind: "rejected" });
+  assert.equal(called, false);
+});
+
+test("Sui BFF sanitizes balance and object payloads and drops sensitive fields", () => {
+  const balances = safeSuiBalances({
+    sui_address: "0x2",
+    network: "mainnet",
+    balances: [{
+      coin_type: "0x2::sui::SUI",
+      raw_balance: "1500000000",
+      amount: "1.5",
+      decimals: 9,
+      symbol: "SUI",
+      private_key: "must-not-forward",
+    }],
+    pagination: { next_cursor: null, has_next_page: false },
+    access_token: validToken,
+  });
+  assert.deepEqual(balances, {
+    sui_address: "0x2",
+    network: "mainnet",
+    balances: [{
+      coin_type: "0x2::sui::SUI",
+      raw_balance: "1500000000",
+      amount: "1.5",
+      decimals: 9,
+      symbol: "SUI",
+    }],
+    pagination: { next_cursor: null, has_next_page: false },
+  });
+
+  const objects = safeSuiObjects({
+    sui_address: "0x2",
+    network: "mainnet",
+    objects: [{
+      object_id: "0x3",
+      version: "12",
+      digest: "1".repeat(32),
+      type: "0x2::example::Item",
+      api_key: "must-not-forward",
+    }],
+    pagination: { next_cursor: "opaque-next", has_next_page: true },
+    provider_error: "must-not-forward",
+  });
+  assert.deepEqual(objects, {
+    sui_address: "0x2",
+    network: "mainnet",
+    objects: [{
+      object_id: "0x3",
+      version: "12",
+      digest: "1".repeat(32),
+      type: "0x2::example::Item",
+    }],
+    pagination: { next_cursor: "opaque-next", has_next_page: true },
+  });
+});
+
+test("Sui BFF maps upstream failures and network errors without returning secrets", async () => {
+  for (const [upstreamStatus, expectedStatus, expectedError] of [
+    [503, 503, "provider_unavailable"],
+    [502, 502, "provider_error"],
+  ]) {
+    const safe = await safeSuiBackendResponse(
+      jsonResponse({
+        error: "provider_error",
+        message: "provider response contains credentials",
+        api_key: "tatum-secret",
+        token: validToken,
+      }, upstreamStatus),
+      "balances",
+    );
+    assert.equal(safe.status, expectedStatus);
+    assert.equal(safe.body.error, expectedError);
+    assert.equal(JSON.stringify(safe).includes("tatum-secret"), false);
+    assert.equal(JSON.stringify(safe).includes(validToken), false);
+  }
+
+  const failed = await callBackend("/api/v1/sui/wallet/0x2/objects", {
+    token: validToken,
+    env: backendEnv,
+    fetchImpl: async () => {
+      throw new TypeError("private token and upstream details");
+    },
+  });
+  assert.deepEqual(failed, { kind: "unavailable" });
 });
 
 test("authenticated BFF forwarding supports real memory save and recall contracts", async () => {

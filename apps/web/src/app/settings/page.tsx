@@ -6,6 +6,7 @@ import { ArrowRightIcon, ShieldIcon } from "@/components/icons";
 import { PageHeading } from "@/components/ui";
 import { ApiError, getSession, logout } from "@/lib/api";
 import type { SessionStatus } from "@/lib/types";
+import { WalletConnectionPanel } from "@/components/wallet-connection";
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -64,6 +65,7 @@ export default function SettingsPage() {
           </div>
         </div>
       </section>
+      <WalletConnectionPanel />
       <section className="surface-card divide-y divide-[#202a34]">
         <div className="px-5 py-5 sm:px-7">
           <h2 className="text-[13px] font-semibold text-[#e2e8ee]">Connected services</h2>

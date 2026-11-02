@@ -1,4 +1,6 @@
 """Unit tests for decoupled provider adapters."""
+import json
+
 import httpx
 import pytest
 from app.adapters.llm.gemini import GeminiAdapter
@@ -285,6 +287,8 @@ async def test_tatum_sui_balance_and_recent_activity_use_graphql(monkeypatch):
     assert len(requests) == 2
     assert all(request.url.path == "/graphql" for request in requests)
     assert all(request.headers["x-api-key"] == "unit-test-tatum-key" for request in requests)
+    native_query = json.loads(requests[0].content)["query"]
+    assert 'balance(coinType: "0x2::sui::SUI")' in native_query
 
 
 @pytest.mark.asyncio

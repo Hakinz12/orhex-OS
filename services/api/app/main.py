@@ -12,6 +12,7 @@ from app.adapters.walrus.memwal import close_walrus_client
 from app.api.v1.health import router as health_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.memory import router as memory_router
+from app.api.v1.sui import router as sui_router
 from app.api.v1.memory import ErrorResponse
 from app.services.memory_persistence import recover_pending_operations
 
@@ -129,6 +130,7 @@ app.add_middleware(
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(memory_router, prefix="/api/v1")
+app.include_router(sui_router, prefix="/api/v1")
 
 
 @app.get("/")

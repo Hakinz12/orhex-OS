@@ -1,7 +1,9 @@
 const SESSION_PATH = "/api/v1/auth/session";
 const MEMORY_STATUS_PATH = "/api/v1/memory/status";
+const SUI_WALLET_PATH = /^\/api\/v1\/sui\/wallet\/0x[0-9a-fA-F]{1,64}\/(balances|objects)$/;
 const MEMORY_WRITE_TIMEOUT_MS = 160_000;
 const BACKEND_REQUEST_TIMEOUT_MS = 8_000;
+const MAX_SUI_CURSOR_LENGTH = 512;
 
 export function sessionCookieName(env = process.env) {
   // Keep the existing cookie name so active browser sessions survive the rebrand.
@@ -92,6 +94,7 @@ export function backendBaseUrl(env = process.env) {
 function isAllowedBackendPath(path, method) {
   if (path === SESSION_PATH && method === "GET") return true;
   if (path === MEMORY_STATUS_PATH && method === "GET") return true;
+  if (SUI_WALLET_PATH.test(path) && method === "GET") return true;
   if (path === "/api/v1/memory/remember" && method === "POST") return true;
   if (path === "/api/v1/memory/recall" && method === "POST") return true;
   if (/^\/api\/v1\/memory\/records\/(active|trash)$/.test(path) && method === "GET") return true;
@@ -102,10 +105,34 @@ function isAllowedBackendPath(path, method) {
 
 export async function callBackend(
   path,
-  { token, method = "GET", body, env = process.env, fetchImpl = fetch } = {},
+  { token, method = "GET", body, query, env = process.env, fetchImpl = fetch } = {},
 ) {
   if (!isAllowedBackendPath(path, method)) {
     return { kind: "rejected" };
+  }
+  const isSuiWalletRequest = SUI_WALLET_PATH.test(path);
+  let search = "";
+  if (query !== undefined) {
+    if (!isSuiWalletRequest || !query || typeof query !== "object" || Array.isArray(query)) {
+      return { kind: "rejected" };
+    }
+    if (
+      Object.keys(query).some((key) => !["limit", "cursor"].includes(key)) ||
+      (query.limit !== undefined &&
+        (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > 50)) ||
+      (query.cursor !== undefined &&
+        (typeof query.cursor !== "string" ||
+          query.cursor.length < 1 ||
+          query.cursor.length > MAX_SUI_CURSOR_LENGTH ||
+          query.cursor !== query.cursor.trim() ||
+          /[\u0000-\u001f\u007f]/.test(query.cursor)))
+    ) {
+      return { kind: "rejected" };
+    }
+    const params = new URLSearchParams();
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
+    if (query.cursor !== undefined) params.set("cursor", query.cursor);
+    search = params.size > 0 ? `?${params.toString()}` : "";
   }
   let base;
   try {
@@ -118,7 +145,7 @@ export async function callBackend(
     const headers = new Headers({ Accept: "application/json" });
     if (token) headers.set("Authorization", `Bearer ${token}`);
     if (body !== undefined) headers.set("Content-Type", "application/json");
-    const response = await fetchImpl(`${base}${path}`, {
+    const response = await fetchImpl(`${base}${path}${search}`, {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -290,4 +317,186 @@ export function safeErrorResponse(status) {
   if (status === 501) return { status: 501, body: { error: "unsupported_operation", message: "Walrus permanent deletion is unsupported; the memory remains in Trash." } };
   if (status === 502) return { status: 502, body: { error: "memory_service_error", message: "The memory service could not complete the request." } };
   return { status: 503, body: { error: "service_unavailable", message: "The memory service is temporarily unavailable." } };
+}
+
+function isSuiAddress(value) {
+  return typeof value === "string" && /^0x[0-9a-fA-F]{1,64}$/.test(value);
+}
+
+export function validateSuiWalletAddress(value) {
+  return isSuiAddress(value);
+}
+
+export function parseSuiPagination(searchParams) {
+  const keys = [...searchParams.keys()];
+  if (
+    keys.some((key) => !["limit", "cursor"].includes(key)) ||
+    keys.some((key, index) => keys.indexOf(key) !== index)
+  ) return null;
+  const query = {};
+  if (searchParams.has("limit")) {
+    const rawLimit = searchParams.get("limit");
+    if (!rawLimit || !/^[0-9]+$/.test(rawLimit)) return null;
+    const limit = Number(rawLimit);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) return null;
+    query.limit = limit;
+  }
+  if (searchParams.has("cursor")) {
+    const cursor = searchParams.get("cursor");
+    if (
+      !cursor ||
+      cursor.length > MAX_SUI_CURSOR_LENGTH ||
+      cursor !== cursor.trim() ||
+      /[\u0000-\u001f\u007f]/.test(cursor)
+    ) return null;
+    query.cursor = cursor;
+  }
+  return query;
+}
+
+function safeSuiPagination(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (
+    typeof value.has_next_page !== "boolean" ||
+    (value.next_cursor !== null && typeof value.next_cursor !== "string") ||
+    (typeof value.next_cursor === "string" &&
+      (value.next_cursor.length < 1 ||
+        value.next_cursor.length > MAX_SUI_CURSOR_LENGTH ||
+        value.next_cursor !== value.next_cursor.trim() ||
+        /[\u0000-\u001f\u007f]/.test(value.next_cursor))) ||
+    (value.has_next_page && typeof value.next_cursor !== "string")
+  ) return null;
+  return {
+    next_cursor: value.has_next_page ? value.next_cursor : null,
+    has_next_page: value.has_next_page,
+  };
+}
+
+export function safeSuiBalances(payload) {
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    Array.isArray(payload) ||
+    !isSuiAddress(payload.sui_address) ||
+    !["mainnet", "testnet", "devnet"].includes(payload.network) ||
+    !Array.isArray(payload.balances)
+  ) return null;
+  const balances = payload.balances.map((balance) => {
+    if (!balance || typeof balance !== "object" || Array.isArray(balance)) return null;
+    if (
+      typeof balance.coin_type !== "string" ||
+      !balance.coin_type ||
+      typeof balance.raw_balance !== "string" ||
+      !/^(0|[1-9][0-9]*)$/.test(balance.raw_balance) ||
+      (balance.amount !== null &&
+        (typeof balance.amount !== "string" ||
+          !/^(0|[1-9][0-9]*)(\.[0-9]+)?$/.test(balance.amount))) ||
+      (balance.decimals !== null &&
+        (!Number.isInteger(balance.decimals) || balance.decimals < 0 || balance.decimals > 255)) ||
+      (balance.symbol !== null && typeof balance.symbol !== "string")
+    ) return null;
+    return {
+      coin_type: balance.coin_type,
+      raw_balance: balance.raw_balance,
+      amount: balance.amount,
+      decimals: balance.decimals,
+      symbol: balance.symbol,
+    };
+  });
+  if (balances.some((balance) => balance === null)) return null;
+  const pagination = safeSuiPagination(payload.pagination);
+  if (!pagination) return null;
+  return {
+    sui_address: payload.sui_address,
+    network: payload.network,
+    balances,
+    pagination,
+  };
+}
+
+export function safeSuiObjects(payload) {
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    Array.isArray(payload) ||
+    !isSuiAddress(payload.sui_address) ||
+    !["mainnet", "testnet", "devnet"].includes(payload.network) ||
+    !Array.isArray(payload.objects)
+  ) return null;
+  const objects = payload.objects.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    if (
+      !isSuiAddress(item.object_id) ||
+      (item.version !== null &&
+        (typeof item.version !== "string" || !/^(0|[1-9][0-9]*)$/.test(item.version))) ||
+      (item.digest !== null && typeof item.digest !== "string") ||
+      (item.type !== null && typeof item.type !== "string")
+    ) return null;
+    return {
+      object_id: item.object_id,
+      version: item.version,
+      digest: item.digest,
+      type: item.type,
+    };
+  });
+  if (objects.some((item) => item === null)) return null;
+  const pagination = safeSuiPagination(payload.pagination);
+  if (!pagination) return null;
+  return {
+    sui_address: payload.sui_address,
+    network: payload.network,
+    objects,
+    pagination,
+  };
+}
+
+export function safeSuiErrorResponse(status) {
+  if (status === 401) {
+    return { status: 401, body: { error: "unauthenticated", message: "Your session is invalid or expired." } };
+  }
+  if (status === 403) {
+    return { status: 403, body: { error: "forbidden", message: "This request is not permitted." } };
+  }
+  if (status === 404) {
+    return { status: 404, body: { error: "not_found", message: "The requested Sui data was not found." } };
+  }
+  if (status === 422) {
+    return { status: 422, body: { error: "invalid_request", message: "The Sui request parameters are invalid." } };
+  }
+  if (status === 429) {
+    return { status: 429, body: { error: "rate_limited", message: "Too many requests. Please retry shortly." } };
+  }
+  if (status === 502) {
+    return { status: 502, body: { error: "provider_error", message: "The Sui data provider could not complete the request." } };
+  }
+  return { status: 503, body: { error: "provider_unavailable", message: "The Sui data provider is temporarily unavailable." } };
+}
+
+export async function safeSuiBackendResponse(response, resource) {
+  if (!response.ok) return safeSuiErrorResponse(response.status);
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    return {
+      status: 502,
+      body: {
+        error: "invalid_backend_response",
+        message: "The Sui service returned an invalid response.",
+      },
+    };
+  }
+  const safePayload = resource === "balances"
+    ? safeSuiBalances(payload)
+    : safeSuiObjects(payload);
+  if (!safePayload) {
+    return {
+      status: 502,
+      body: {
+        error: "invalid_backend_response",
+        message: "The Sui service returned an invalid response.",
+      },
+    };
+  }
+  return { status: response.status, body: safePayload };
 }

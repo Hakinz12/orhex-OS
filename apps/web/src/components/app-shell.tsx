@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
+import { Wallet2 } from "lucide-react";
 import {
   BellIcon,
   CloseIcon,
@@ -24,6 +25,7 @@ const navigation = [
   { label: "Memory", href: "/memory", Icon: MemoryIcon },
   { label: "Timeline", href: "/timeline", Icon: TimelineIcon },
   { label: "Insights", href: "/insights", Icon: InsightsIcon },
+  { label: "Sui Wallet", href: "/sui", Icon: Wallet2 },
 ];
 const searchableRoutes = [
   ...navigation.map(({ label, href }) => ({ label, href })),

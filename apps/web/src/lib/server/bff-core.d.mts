@@ -42,6 +42,7 @@ export function callBackend(
     token?: string;
     method?: "GET" | "POST" | "DELETE";
     body?: Record<string, unknown>;
+    query?: { limit?: number; cursor?: string };
     env?: NodeJS.ProcessEnv;
     fetchImpl?: typeof fetch;
   },
@@ -78,3 +79,18 @@ export function safeErrorResponse(status: number): {
   status: number;
   body: { error: string; message: string };
 };
+export function validateSuiWalletAddress(value: unknown): value is string;
+export function parseSuiPagination(searchParams: URLSearchParams): {
+  limit?: number;
+  cursor?: string;
+} | null;
+export function safeSuiBalances(payload: unknown): Record<string, unknown> | null;
+export function safeSuiObjects(payload: unknown): Record<string, unknown> | null;
+export function safeSuiErrorResponse(status: number): {
+  status: number;
+  body: { error: string; message: string };
+};
+export function safeSuiBackendResponse(
+  response: Response,
+  resource: "balances" | "objects",
+): Promise<{ status: number; body: Record<string, unknown> }>;
