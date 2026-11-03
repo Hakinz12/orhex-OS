@@ -7,8 +7,16 @@ import {
   sessionCookieName,
   sessionCookieOptions,
   validateBackendSession,
+  validateBackendVisitorSession,
 } from "@/lib/server/bff-core.mjs";
 import { jsonError } from "@/lib/server/bff";
+
+const visitorCookieName = (env = process.env) =>
+  env.NODE_ENV === "production" ? "__Host-orhrex_visitor_session" : "orhrex_visitor_session";
+
+async function validateVisitorSession(token: string) {
+  return validateBackendVisitorSession(token);
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,6 +31,27 @@ function sessionJson(body: Record<string, unknown>, status = 200) {
 function clearSession(response: NextResponse) {
   response.cookies.set(sessionCookieName(), "", clearedSessionCookieOptions());
   return response;
+}
+
+function clearVisitorSession(response: NextResponse) {
+  response.cookies.set(visitorCookieName(), "", clearedSessionCookieOptions());
+  return response;
+}
+
+function visitorSessionPayload(session: {
+  visitorIdentityId: string;
+  createdAt: Date;
+  credentialCreatedAt: Date;
+  credentialExpiresAt: Date | null;
+}) {
+  return {
+    authenticated: true,
+    kind: "visitor",
+    visitorIdentityId: session.visitorIdentityId,
+    createdAt: session.createdAt.toISOString(),
+    credentialCreatedAt: session.credentialCreatedAt.toISOString(),
+    credentialExpiresAt: session.credentialExpiresAt?.toISOString() ?? null,
+  };
 }
 
 export async function POST(request: Request) {
@@ -55,6 +84,7 @@ export async function POST(request: Request) {
 
   const response = sessionJson({
     authenticated: true,
+    kind: "pat",
     expiresAt: session.expiresAt.toISOString(),
   });
   response.cookies.set(
@@ -62,25 +92,40 @@ export async function POST(request: Request) {
     token,
     sessionCookieOptions(session.expiresAt),
   );
+  response.cookies.set(visitorCookieName(), "", clearedSessionCookieOptions());
   return response;
 }
 
 export async function GET() {
   const cookieStore = await cookies();
-  const token = cookieStore.get(sessionCookieName())?.value;
-  if (!token) return jsonError(401, "unauthenticated", "Sign-in is required.");
-
-  const session = await validateBackendSession(token);
-  if (!session.ok) {
-    if (session.status === 503) {
+  const patToken = cookieStore.get(sessionCookieName())?.value;
+  if (patToken) {
+    const patSession = await validateBackendSession(patToken);
+    if (patSession.ok) {
+      return sessionJson({
+        authenticated: true,
+        kind: "pat",
+        expiresAt: patSession.expiresAt.toISOString(),
+      });
+    }
+    if (patSession.status === 503) {
       return jsonError(503, "service_unavailable", "Session status is temporarily unavailable.");
     }
-    return clearSession(jsonError(401, "unauthenticated", "Your session is invalid or expired."));
+    return clearSession(
+      jsonError(401, "unauthenticated", "Your session is invalid or expired."),
+    );
   }
-  return sessionJson({
-    authenticated: true,
-    expiresAt: session.expiresAt.toISOString(),
-  });
+
+  const visitorToken = cookieStore.get(visitorCookieName())?.value;
+  if (!visitorToken) return jsonError(401, "unauthenticated", "Sign-in is required.");
+  const visitorSession = await validateVisitorSession(visitorToken);
+  if (visitorSession.ok) return sessionJson(visitorSessionPayload(visitorSession));
+  if (visitorSession.status === 503) {
+    return jsonError(503, "service_unavailable", "Session status is temporarily unavailable.");
+  }
+  return clearVisitorSession(
+    jsonError(401, "unauthenticated", "Your session is invalid or expired."),
+  );
 }
 
 export async function DELETE(request: Request) {

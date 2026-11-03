@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     API_PUBLIC_URL: str = ""
     AUTH_TOKEN_TTL_HOURS: int = Field(default=24, ge=1, le=720)
     AUTH_RATE_LIMIT_PER_MINUTE: int = Field(default=60, ge=1, le=600)
+    VISITOR_BOOTSTRAP_RATE_LIMIT_PER_MINUTE: int = Field(default=5, ge=1, le=60)
 
     # --- Relational Database ---
     DATABASE_URL: str = "sqlite+aiosqlite:///./orhrex.db"

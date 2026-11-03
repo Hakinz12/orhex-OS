@@ -21,6 +21,11 @@ from app.main import app
 from app.core.rate_limit import SensitiveEndpointRateLimiter
 from app.core.config import settings
 from app.models.domain import MemorySyncRecord, User, UserAccessToken, utc_now
+from app.services.anonymous_visitor_identity import (
+    provision_visitor_identity,
+    resolve_visitor_credential,
+    rotate_visitor_credential,
+)
 from app.services.memory_persistence import namespace_for_user
 
 
@@ -112,6 +117,12 @@ async def provision(harness, *, preferred_name=None, expires_at=None):
             expires_at=expires_at,
         )
         return user.id, token
+
+
+async def provision_visitor(harness):
+    async with harness.factory() as session:
+        issue = await provision_visitor_identity(session)
+    return issue
 
 
 def bearer(token):
@@ -358,6 +369,331 @@ async def test_memory_creation_and_recall_are_scoped_to_authenticated_principal(
     assert recalled.status_code == 200
     assert recalled.json()["namespace"] == operation["namespace"]
     assert api_harness.walrus.recall.await_args.kwargs["namespace"] == operation["namespace"]
+
+
+@pytest.mark.asyncio
+async def test_visitor_memory_persists_recalls_lists_and_survives_rotation(api_harness):
+    visitor = await provision_visitor(api_harness)
+    owner_namespace = namespace_for_user(visitor.user.id)
+    saved = await api_harness.client.post(
+        "/api/v1/memory/remember",
+        headers=bearer(visitor.credential),
+        json={"text": "Visitor-owned memory survives credential rotation."},
+    )
+
+    assert saved.status_code == 201
+    operation_id = saved.json()["operation_id"]
+    assert saved.json()["namespace"] == owner_namespace
+    assert api_harness.walrus.remember.await_args.kwargs["namespace"] == owner_namespace
+    async with api_harness.factory() as session:
+        record = await session.get(MemorySyncRecord, operation_id)
+        assert record.user_id == visitor.user.id
+        assert record.namespace == owner_namespace
+
+    listed = await api_harness.client.get(
+        "/api/v1/memory/records/active",
+        headers=bearer(visitor.credential),
+    )
+    status = await api_harness.client.get(
+        f"/api/v1/memory/operations/{operation_id}",
+        headers=bearer(visitor.credential),
+    )
+    assert listed.status_code == status.status_code == 200
+    assert [item["operation_id"] for item in listed.json()["memories"]] == [
+        operation_id
+    ]
+    assert status.json()["operation_id"] == operation_id
+
+    api_harness.walrus.recall.return_value = [
+        {
+            "blob_id": saved.json()["blob_id"],
+            "text": "Visitor-owned memory survives credential rotation.",
+            "distance": 0.1,
+            "namespace": owner_namespace,
+        }
+    ]
+    recalled = await api_harness.client.post(
+        "/api/v1/memory/recall",
+        headers=bearer(visitor.credential),
+        json={"query": "visitor-owned memory"},
+    )
+    assert recalled.status_code == 200
+    assert recalled.json()["namespace"] == owner_namespace
+    assert api_harness.walrus.recall.await_args.kwargs["namespace"] == owner_namespace
+
+    async with api_harness.factory() as session:
+        rotated = await rotate_visitor_credential(session, visitor.credential)
+    after_rotation = await api_harness.client.get(
+        f"/api/v1/memory/operations/{operation_id}",
+        headers=bearer(rotated.credential),
+    )
+    old_credential = await api_harness.client.get(
+        f"/api/v1/memory/operations/{operation_id}",
+        headers=bearer(visitor.credential),
+    )
+    assert after_rotation.status_code == 200
+    assert after_rotation.json()["operation_id"] == operation_id
+    assert after_rotation.json()["namespace"] == owner_namespace
+    assert old_credential.status_code == 401
+    assert (await api_harness.client.get("/api/v1/memory/status", headers=bearer(rotated.credential))).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_visitor_memory_ownership_isolated_from_other_visitors_and_pat_users(
+    api_harness,
+):
+    visitor_a = await provision_visitor(api_harness)
+    visitor_b = await provision_visitor(api_harness)
+    pat_user_id, pat = await provision(api_harness)
+    created = await api_harness.client.post(
+        "/api/v1/memory/remember",
+        headers=bearer(visitor_a.credential),
+        json={"text": "This memory belongs only to visitor A."},
+    )
+    record_id = created.json()["operation_id"]
+
+    for other_credential in (visitor_b.credential, pat):
+        status = await api_harness.client.get(
+            f"/api/v1/memory/operations/{record_id}",
+            headers=bearer(other_credential),
+        )
+        reconcile = await api_harness.client.post(
+            f"/api/v1/memory/operations/{record_id}/reconcile",
+            headers=bearer(other_credential),
+        )
+        trash = await api_harness.client.delete(
+            f"/api/v1/memory/operations/{record_id}",
+            headers=bearer(other_credential),
+        )
+        restore = await api_harness.client.post(
+            f"/api/v1/memory/operations/{record_id}/restore",
+            headers=bearer(other_credential),
+        )
+        assert status.status_code == reconcile.status_code == 404
+        assert trash.status_code == restore.status_code == 404
+
+    visitor_b_list = await api_harness.client.get(
+        "/api/v1/memory/records/active",
+        headers=bearer(visitor_b.credential),
+    )
+    pat_list = await api_harness.client.get(
+        "/api/v1/memory/records/active",
+        headers=bearer(pat),
+    )
+    assert visitor_b_list.json()["memories"] == []
+    assert pat_list.json()["memories"] == []
+
+    pat_created = await api_harness.client.post(
+        "/api/v1/memory/remember",
+        headers=bearer(pat),
+        json={"text": "This memory belongs only to the PAT user."},
+    )
+    visitor_a_list = await api_harness.client.get(
+        "/api/v1/memory/records/active",
+        headers=bearer(visitor_a.credential),
+    )
+    assert pat_created.status_code == 201
+    assert pat_created.json()["namespace"] == namespace_for_user(pat_user_id)
+    assert pat_created.json()["operation_id"] != record_id
+    assert [item["operation_id"] for item in visitor_a_list.json()["memories"]] == [
+        record_id
+    ]
+    for path, method in (
+        (f"/api/v1/memory/operations/{pat_created.json()['operation_id']}", "GET"),
+        (
+            f"/api/v1/memory/operations/{pat_created.json()['operation_id']}/reconcile",
+            "POST",
+        ),
+        (f"/api/v1/memory/operations/{pat_created.json()['operation_id']}", "DELETE"),
+        (
+            f"/api/v1/memory/operations/{pat_created.json()['operation_id']}/restore",
+            "POST",
+        ),
+    ):
+        response = await api_harness.client.request(
+            method,
+            path,
+            headers=bearer(visitor_a.credential),
+        )
+        assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_new_bootstrap_after_lost_credential_starts_an_isolated_memory_owner(
+    api_harness,
+):
+    former_visitor = await provision_visitor(api_harness)
+    saved = await api_harness.client.post(
+        "/api/v1/memory/remember",
+        headers=bearer(former_visitor.credential),
+        json={"text": "Only the lost visitor credential could access this."},
+    )
+    new_bootstrap = await api_harness.client.post("/api/v1/visitor/bootstrap")
+    new_credential = new_bootstrap.json()["visitor_credential"]
+
+    new_list = await api_harness.client.get(
+        "/api/v1/memory/records/active",
+        headers=bearer(new_credential),
+    )
+    assert new_bootstrap.status_code == 200
+    assert new_list.status_code == 200
+    assert new_list.json()["memories"] == []
+    async with api_harness.factory() as session:
+        old_record = await session.get(
+            MemorySyncRecord, saved.json()["operation_id"]
+        )
+        new_visitor = await resolve_visitor_credential(session, new_credential)
+    assert old_record is not None
+    assert new_visitor is not None
+    assert new_visitor.identity.id != former_visitor.identity.id
+    assert new_visitor.user.id != former_visitor.user.id
+    assert old_record.user_id == former_visitor.user.id
+    assert old_record.namespace == namespace_for_user(former_visitor.user.id)
+
+
+@pytest.mark.asyncio
+async def test_reset_creates_empty_memory_owner_and_keeps_old_records(api_harness):
+    visitor = await provision_visitor(api_harness)
+    saved = await api_harness.client.post(
+        "/api/v1/memory/remember",
+        headers=bearer(visitor.credential),
+        json={"text": "This memory stays with the old visitor."},
+    )
+    operation_id = saved.json()["operation_id"]
+
+    reset = await api_harness.client.post(
+        "/api/v1/visitor/session/reset",
+        headers=bearer(visitor.credential),
+    )
+    assert reset.status_code == 200
+    new_credential = reset.json()["visitor_credential"]
+    assert reset.json()["visitor_identity_id"] != visitor.identity.id
+
+    new_list = await api_harness.client.get(
+        "/api/v1/memory/records/active",
+        headers=bearer(new_credential),
+    )
+    old_operations = (
+        await api_harness.client.get(
+            f"/api/v1/memory/operations/{operation_id}",
+            headers=bearer(new_credential),
+        ),
+        await api_harness.client.post(
+            f"/api/v1/memory/operations/{operation_id}/reconcile",
+            headers=bearer(new_credential),
+        ),
+        await api_harness.client.delete(
+            f"/api/v1/memory/operations/{operation_id}",
+            headers=bearer(new_credential),
+        ),
+        await api_harness.client.post(
+            f"/api/v1/memory/operations/{operation_id}/restore",
+            headers=bearer(new_credential),
+        ),
+    )
+    assert new_list.status_code == 200
+    assert new_list.json()["memories"] == []
+    assert all(response.status_code == 404 for response in old_operations)
+    old_token_memory = await api_harness.client.get(
+        f"/api/v1/memory/operations/{operation_id}",
+        headers=bearer(visitor.credential),
+    )
+    assert old_token_memory.status_code == 401
+
+    async with api_harness.factory() as session:
+        old_record = await session.get(MemorySyncRecord, operation_id)
+        assert old_record is not None
+        assert old_record.user_id == visitor.user.id
+        assert old_record.namespace == namespace_for_user(visitor.user.id)
+        assert old_record.walrus_blob_id == saved.json()["blob_id"]
+
+
+@pytest.mark.asyncio
+async def test_memory_extra_owner_fields_rejected_for_visitor_credentials(api_harness):
+    visitor = await provision_visitor(api_harness)
+    remembered = await api_harness.client.post(
+        "/api/v1/memory/remember",
+        headers=bearer(visitor.credential),
+        json={
+            "text": "The visitor cannot choose an owner.",
+            "user_id": visitor.user.id,
+            "namespace": "shared-visitor-namespace",
+        },
+    )
+    recalled = await api_harness.client.post(
+        "/api/v1/memory/recall",
+        headers=bearer(visitor.credential),
+        json={"query": "visitor memory", "namespace": "shared-visitor-namespace"},
+    )
+    assert remembered.status_code == recalled.status_code == 422
+    assert api_harness.walrus.remember.await_count == 0
+    assert api_harness.walrus.recall.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_invalid_expired_and_revoked_visitor_credentials_fail_memory_auth(
+    api_harness,
+):
+    revoked = await provision_visitor(api_harness)
+    expired = await provision_visitor(api_harness)
+    async with api_harness.factory() as session:
+        from app.services.anonymous_visitor_identity import (
+            revoke_visitor_credential,
+        )
+        from app.models.domain import AnonymousVisitorCredential
+
+        assert await revoke_visitor_credential(session, revoked.credential)
+        expired_record = (
+            await session.execute(
+                select(AnonymousVisitorCredential).where(
+                    AnonymousVisitorCredential.visitor_id == expired.identity.id
+                )
+            )
+        ).scalar_one()
+        expired_record.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        await session.commit()
+
+    for credential in (
+        "orv_malformed",
+        "orv_" + ("z" * 43),
+        revoked.credential,
+        expired.credential,
+        "orh_" + ("z" * 43),
+    ):
+        response = await api_harness.client.get(
+            "/api/v1/memory/status",
+            headers=bearer(credential),
+        )
+        assert response.status_code == 401
+        assert response.json()["error"] == "unauthenticated"
+        assert credential not in response.text
+    api_harness.walrus.check_readiness.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_visitor_memory_requests_remain_subject_to_existing_ip_limiter(
+    api_harness, monkeypatch
+):
+    from app import main as main_module
+
+    visitor = await provision_visitor(api_harness)
+    monkeypatch.setattr(
+        main_module,
+        "_sensitive_rate_limiter",
+        SensitiveEndpointRateLimiter(requests_per_minute=1),
+    )
+    first = await api_harness.client.get(
+        "/api/v1/memory/status",
+        headers=bearer(visitor.credential),
+    )
+    second = await api_harness.client.get(
+        "/api/v1/memory/status",
+        headers=bearer(visitor.credential),
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.json()["error"] == "rate_limited"
 
 
 @pytest.mark.asyncio

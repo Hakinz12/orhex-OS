@@ -7,11 +7,30 @@ export type SessionValidation =
   | { ok: true; expiresAt: Date }
   | { ok: false; status: 401 | 503 };
 
+export type VisitorSessionValidation =
+  | {
+      ok: true;
+      visitorIdentityId: string;
+      createdAt: Date;
+      credentialCreatedAt: Date;
+      credentialExpiresAt: Date | null;
+    }
+  | { ok: false; status: 401 | 503 };
+
 export function sessionCookieName(env?: NodeJS.ProcessEnv): string;
+export function visitorCookieName(env?: NodeJS.ProcessEnv): string;
 export function sessionCookieOptions(
   expiresAt: Date | string,
   env?: NodeJS.ProcessEnv,
 ): {
+  httpOnly: true;
+  secure: boolean;
+  sameSite: "lax";
+  path: "/";
+  expires: Date;
+  maxAge: number;
+};
+export function visitorCookieOptions(env?: NodeJS.ProcessEnv): {
   httpOnly: true;
   secure: boolean;
   sameSite: "lax";
@@ -27,7 +46,15 @@ export function clearedSessionCookieOptions(env?: NodeJS.ProcessEnv): {
   expires: Date;
   maxAge: 0;
 };
-export function sameOriginRequest(request: Request): boolean;
+export function clearedVisitorCookieOptions(env?: NodeJS.ProcessEnv): {
+  httpOnly: true;
+  secure: boolean;
+  sameSite: "lax";
+  path: "/";
+  expires: Date;
+  maxAge: 0;
+};
+export function sameOriginRequest(request: Request, env?: NodeJS.ProcessEnv): boolean;
 export function memoryRouteAccess(
   request: Request,
   token: string | null,
@@ -51,12 +78,31 @@ export function validateBackendSession(
   token: unknown,
   options?: { env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch },
 ): Promise<SessionValidation>;
+export function validateBackendVisitorSession(
+  token: unknown,
+  options?: { env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch },
+): Promise<VisitorSessionValidation>;
 export function readJsonBody(
   request: Request,
   maximumBytes?: number,
 ): Promise<{ ok: true; value: unknown } | { ok: false; status: 400 | 413 }>;
 export function validateRememberBody(value: unknown): Record<string, unknown> | null;
 export function validateRecallBody(value: unknown): Record<string, unknown> | null;
+export function validateConversationRequest(value: unknown): {
+  message: string;
+  conversation_id?: string | null;
+  idempotency_key: string;
+} | null;
+export function safeConversation(payload: unknown): {
+  conversation_id: string;
+  version: number;
+  messages: Array<{
+    id: string;
+    role: "user" | "assistant";
+    content: string;
+    created_at: string;
+  }>;
+} | null;
 export function safeReadiness(payload: unknown): Record<string, string | boolean> | null;
 export function safeMemoryOperation(payload: unknown): Record<string, unknown> | null;
 export function safeMemoryList(payload: unknown): {

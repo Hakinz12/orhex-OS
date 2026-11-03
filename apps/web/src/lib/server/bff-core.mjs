@@ -1,15 +1,25 @@
 const SESSION_PATH = "/api/v1/auth/session";
+const VISITOR_BOOTSTRAP_PATH = "/api/v1/visitor/bootstrap";
+const VISITOR_SESSION_PATH = "/api/v1/visitor/session";
 const MEMORY_STATUS_PATH = "/api/v1/memory/status";
 const SUI_WALLET_PATH = /^\/api\/v1\/sui\/wallet\/0x[0-9a-fA-F]{1,64}\/(balances|objects)$/;
 const MEMORY_WRITE_TIMEOUT_MS = 160_000;
+const CONVERSATION_REQUEST_TIMEOUT_MS = 40_000;
 const BACKEND_REQUEST_TIMEOUT_MS = 8_000;
 const MAX_SUI_CURSOR_LENGTH = 512;
+const VISITOR_COOKIE_MAX_AGE_SECONDS = 31_536_000;
 
 export function sessionCookieName(env = process.env) {
   // Keep the existing cookie name so active browser sessions survive the rebrand.
   return env.NODE_ENV === "production"
     ? "__Host-orhrex_session"
     : "orhrex_session";
+}
+
+export function visitorCookieName(env = process.env) {
+  return env.NODE_ENV === "production"
+    ? "__Host-orhrex_visitor_session"
+    : "orhrex_visitor_session";
 }
 
 export function sessionCookieOptions(expiresAt, env = process.env) {
@@ -24,6 +34,18 @@ export function sessionCookieOptions(expiresAt, env = process.env) {
   };
 }
 
+export function visitorCookieOptions(env = process.env) {
+  const expires = new Date(Date.now() + VISITOR_COOKIE_MAX_AGE_SECONDS * 1000);
+  return {
+    httpOnly: true,
+    secure: env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    expires,
+    maxAge: VISITOR_COOKIE_MAX_AGE_SECONDS,
+  };
+}
+
 export function clearedSessionCookieOptions(env = process.env) {
   return {
     httpOnly: true,
@@ -35,22 +57,37 @@ export function clearedSessionCookieOptions(env = process.env) {
   };
 }
 
-export function sameOriginRequest(request) {
+export function clearedVisitorCookieOptions(env = process.env) {
+  return clearedSessionCookieOptions(env);
+}
+
+export function sameOriginRequest(request, env = process.env) {
   const origin = request.headers.get("origin");
   if (!origin) return false;
   try {
     const originUrl = new URL(origin);
     const requestUrl = new URL(request.url);
-    const requestHost =
-      request.headers.get("x-forwarded-host")?.split(",")[0]?.trim() ||
-      request.headers.get("host") ||
-      requestUrl.host;
-    const forwardedProtocol = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
-    const requestProtocol = forwardedProtocol || requestUrl.protocol.slice(0, -1);
+    const configuredOrigin = env.ORHEX_APP_ORIGIN;
+    if (env.NODE_ENV === "production" && !configuredOrigin) return false;
+    const configuredUrl = configuredOrigin ? new URL(configuredOrigin) : null;
+    if (
+      configuredUrl &&
+      (configuredUrl.pathname !== "/" ||
+        configuredUrl.search ||
+        configuredUrl.hash ||
+        configuredUrl.username ||
+        configuredUrl.password ||
+        (env.NODE_ENV === "production" && configuredUrl.protocol !== "https:"))
+    ) return false;
+    const expectedOrigin = configuredUrl?.origin ?? requestUrl.origin;
     return (
       ["http:", "https:"].includes(originUrl.protocol) &&
-      originUrl.host.toLowerCase() === requestHost.toLowerCase() &&
-      originUrl.protocol === `${requestProtocol}:`
+      !originUrl.username &&
+      !originUrl.password &&
+      originUrl.pathname === "/" &&
+      !originUrl.search &&
+      !originUrl.hash &&
+      originUrl.origin.toLowerCase() === expectedOrigin.toLowerCase()
     );
   } catch {
     return false;
@@ -93,7 +130,18 @@ export function backendBaseUrl(env = process.env) {
 
 function isAllowedBackendPath(path, method) {
   if (path === SESSION_PATH && method === "GET") return true;
+  if (path === VISITOR_BOOTSTRAP_PATH && method === "POST") return true;
+  if (path === VISITOR_SESSION_PATH && ["GET", "DELETE"].includes(method)) return true;
+  if (
+    ["/api/v1/visitor/session/rotate", "/api/v1/visitor/session/reset"].includes(path) &&
+    method === "POST"
+  ) return true;
   if (path === MEMORY_STATUS_PATH && method === "GET") return true;
+  if (path === "/api/v1/conversations" && method === "POST") return true;
+  if (
+    /^\/api\/v1\/conversations\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(path) &&
+    method === "GET"
+  ) return true;
   if (SUI_WALLET_PATH.test(path) && method === "GET") return true;
   if (path === "/api/v1/memory/remember" && method === "POST") return true;
   if (path === "/api/v1/memory/recall" && method === "POST") return true;
@@ -153,6 +201,9 @@ export async function callBackend(
       signal: AbortSignal.timeout(
         path === "/api/v1/memory/remember"
           ? MEMORY_WRITE_TIMEOUT_MS
+          : path === "/api/v1/conversations" ||
+              path.startsWith("/api/v1/conversations/")
+            ? CONVERSATION_REQUEST_TIMEOUT_MS
           : BACKEND_REQUEST_TIMEOUT_MS,
       ),
       redirect: "error",
@@ -187,6 +238,57 @@ export async function validateBackendSession(token, options = {}) {
       return { ok: false, status: 401 };
     }
     return { ok: true, expiresAt };
+  } catch {
+    return { ok: false, status: 503 };
+  }
+}
+
+export async function validateBackendVisitorSession(token, options = {}) {
+  if (typeof token !== "string" || !/^orv_[A-Za-z0-9_-]{43,100}$/.test(token)) {
+    return { ok: false, status: 401 };
+  }
+  const result = await callBackend(VISITOR_SESSION_PATH, { ...options, token });
+  if (result.kind !== "response") return { ok: false, status: 503 };
+  if (result.response.status === 401) return { ok: false, status: 401 };
+  if (!result.response.ok) return { ok: false, status: 503 };
+  try {
+    const payload = await result.response.json();
+    const allowedKeys = [
+      "id",
+      "user_id",
+      "created_at",
+      "credential_created_at",
+      "credential_expires_at",
+      "status",
+    ];
+    const createdAt = new Date(payload.created_at);
+    const credentialCreatedAt = new Date(payload.credential_created_at);
+    const expiresAt = payload.credential_expires_at === null
+      ? null
+      : new Date(payload.credential_expires_at);
+    if (
+      !payload ||
+      typeof payload !== "object" ||
+      Array.isArray(payload) ||
+      Object.keys(payload).length !== allowedKeys.length ||
+      Object.keys(payload).some((key) => !allowedKeys.includes(key)) ||
+      typeof payload.id !== "string" ||
+      typeof payload.user_id !== "string" ||
+      !Number.isFinite(createdAt.getTime()) ||
+      !Number.isFinite(credentialCreatedAt.getTime()) ||
+      payload.status !== "active" ||
+      (expiresAt !== null &&
+        (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now()))
+    ) {
+      return { ok: false, status: 401 };
+    }
+    return {
+      ok: true,
+      visitorIdentityId: payload.id,
+      createdAt,
+      credentialCreatedAt,
+      credentialExpiresAt: expiresAt,
+    };
   } catch {
     return { ok: false, status: 503 };
   }
@@ -233,6 +335,76 @@ export function validateRecallBody(value) {
   if (typeof value.query !== "string" || value.query.trim().length < 3 || value.query.length > 1000) return null;
   if (value.limit !== undefined && (!Number.isInteger(value.limit) || value.limit < 1 || value.limit > 20)) return null;
   return { query: value.query.trim(), ...(value.limit !== undefined ? { limit: value.limit } : {}) };
+}
+
+export function validateConversationRequest(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (Object.keys(value).some((key) => !["message", "conversation_id", "idempotency_key"].includes(key))) return null;
+  if (typeof value.message !== "string" || !value.message.trim() || value.message.length > 4000) return null;
+  if (typeof value.idempotency_key !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.idempotency_key)
+  ) return null;
+  if (value.conversation_id !== undefined && value.conversation_id !== null &&
+    (typeof value.conversation_id !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.conversation_id))
+  ) return null;
+  return {
+    message: value.message.trim(),
+    idempotency_key: value.idempotency_key,
+    ...(value.conversation_id !== undefined ? { conversation_id: value.conversation_id } : {}),
+  };
+}
+
+export function safeConversation(payload) {
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    Array.isArray(payload) ||
+    typeof payload.conversation_id !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(payload.conversation_id) ||
+    !Number.isInteger(payload.version) ||
+    payload.version < 1 ||
+    !Array.isArray(payload.messages) ||
+    payload.messages.length > 40
+  ) return null;
+  const messages = payload.messages.map((message) => ({
+    id: message?.id,
+    role: message?.role,
+    content: message?.content,
+    created_at: message?.created_at,
+  }));
+  if (messages.some((message) =>
+    typeof message.id !== "string" ||
+    !["user", "assistant"].includes(message.role) ||
+    typeof message.content !== "string" ||
+    message.content.length > 8000 ||
+    typeof message.created_at !== "string" ||
+    !Number.isFinite(Date.parse(message.created_at))
+  )) return null;
+  const memoryContext = payload.memory_context ?? {
+    status: "not_retrieved",
+    count: 0,
+  };
+  if (
+    !memoryContext ||
+    typeof memoryContext !== "object" ||
+    Array.isArray(memoryContext) ||
+    !["retrieved", "empty", "unavailable", "not_retrieved"].includes(memoryContext.status) ||
+    !Number.isInteger(memoryContext.count) ||
+    memoryContext.count < 0 ||
+    memoryContext.count > 5 ||
+    (memoryContext.status !== "retrieved" && memoryContext.count !== 0) ||
+    (memoryContext.status === "retrieved" && memoryContext.count === 0)
+  ) return null;
+  return {
+    conversation_id: payload.conversation_id,
+    version: payload.version,
+    messages,
+    memory_context: {
+      status: memoryContext.status,
+      count: memoryContext.count,
+    },
+  };
 }
 
 export function safeReadiness(payload) {

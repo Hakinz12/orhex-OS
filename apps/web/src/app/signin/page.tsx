@@ -4,6 +4,7 @@ import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { MarkIcon, ShieldIcon } from "@/components/icons";
 import { createSession } from "@/lib/api";
+import { useSession } from "@/components/session-provider";
 
 function safeDestination() {
   const candidate = new URLSearchParams(window.location.search).get("next");
@@ -19,6 +20,7 @@ function safeDestination() {
 
 export default function SignInPage() {
   const router = useRouter();
+  const { refresh, startVisitor } = useSession();
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,12 +31,27 @@ export default function SignInPage() {
     setError(null);
     try {
       await createSession(token.trim());
+      await refresh();
       setToken("");
       router.replace(safeDestination());
       router.refresh();
     } catch (reason) {
       setToken("");
       setError(reason instanceof Error ? reason.message : "Sign-in could not be completed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function continueAsVisitor() {
+    setBusy(true);
+    setError(null);
+    try {
+      await startVisitor();
+      router.replace("/");
+      router.refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "A visitor space could not be started.");
     } finally {
       setBusy(false);
     }
@@ -81,6 +98,19 @@ export default function SignInPage() {
             {busy ? "Verifying access…" : "Continue securely"}
           </button>
         </form>
+        <div className="my-6 flex items-center gap-3 text-[10px] uppercase tracking-[0.12em] text-[#647384]">
+          <span className="h-px flex-1 bg-[#202a34]" />
+          or
+          <span className="h-px flex-1 bg-[#202a34]" />
+        </div>
+        <button
+          type="button"
+          className="secondary-button w-full"
+          onClick={() => void continueAsVisitor()}
+          disabled={busy}
+        >
+          Continue without a PAT
+        </button>
         <p className="mt-6 border-t border-[#202a34] pt-5 text-[10px] leading-5 text-[#718092]">
           ORHEX does not issue access tokens from this page. Contact your trusted operator if you need access.
         </p>

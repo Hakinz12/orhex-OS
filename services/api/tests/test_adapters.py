@@ -3,7 +3,17 @@ import json
 
 import httpx
 import pytest
-from app.adapters.llm.gemini import GeminiAdapter
+from app.adapters.llm.gemini import (
+    GeminiAdapter,
+    GeminiProviderError,
+    GeminiResponseError,
+    GeminiTimeoutError,
+    GeminiUnavailableError,
+)
+from app.services.conversation_memory_context import (
+    ConversationMemoryContext,
+    RetrievedMemory,
+)
 from app.adapters.walrus.memwal import MemWalAdapter
 from app.adapters.tatum.sui_rpc import TatumSuiAdapter
 from app.core.config import settings
@@ -101,6 +111,117 @@ async def test_gemini_generation_keeps_key_out_of_url(monkeypatch):
     assert requests[0].headers["x-goog-api-key"] == "unit-test-gemini-key"
     assert "unit-test-gemini-key" not in str(requests[0].url)
     assert "key" not in requests[0].url.params
+
+
+@pytest.mark.asyncio
+async def test_gemini_conversation_adapter_sends_turns_and_parses_validated_answer(monkeypatch):
+    requests = []
+    client_factory = httpx.AsyncClient
+
+    def handle_request(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "candidates": [{
+                    "content": {
+                        "parts": [{"text": '{"answer":"A real provider answer."}'}],
+                    },
+                }],
+            },
+        )
+
+    transport = httpx.MockTransport(handle_request)
+    monkeypatch.setattr(
+        "app.adapters.llm.gemini.httpx.AsyncClient",
+        lambda **kwargs: client_factory(transport=transport, **kwargs),
+    )
+    adapter = GeminiAdapter(api_key="unit-test-gemini-key")
+    answer = await adapter.generate_conversation_response([
+        {"role": "user", "content": "Earlier question"},
+        {"role": "model", "content": "Earlier answer"},
+        {"role": "user", "content": "Current question"},
+    ], memory_context=ConversationMemoryContext(
+        status="retrieved",
+        memories=[
+            RetrievedMemory(
+                memory_id="private-memory-id",
+                content="I prefer concise explanations.",
+                score=0.88,
+                created_at="2025-01-02T03:04:05Z",
+            ),
+            RetrievedMemory(
+                memory_id="another-private-id",
+                content="I prefer detailed explanations.",
+                created_at="2024-01-02T03:04:05Z",
+            ),
+        ],
+    ))
+
+    assert answer == "A real provider answer."
+    assert len(requests) == 1
+    assert requests[0].headers["x-goog-api-key"] == "unit-test-gemini-key"
+    assert "unit-test-gemini-key" not in str(requests[0].url)
+    payload = json.loads(requests[0].content)
+    assert "systemInstruction" in payload
+    assert [turn["role"] for turn in payload["contents"]] == ["user", "model", "user"]
+    assert payload["contents"][-1]["parts"][0]["text"] == "Current question"
+    memory_part = payload["contents"][-1]["parts"][1]["text"]
+    assert "I prefer concise explanations." in memory_part
+    assert "I prefer detailed explanations." in memory_part
+    assert "private-memory-id" not in memory_part
+    assert "untrusted evidence" in payload["systemInstruction"]["parts"][0]["text"]
+    assert "materially conflict" in payload["systemInstruction"]["parts"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_gemini_conversation_adapter_fails_explicitly_without_credentials():
+    adapter = GeminiAdapter(api_key="")
+    with pytest.raises(GeminiUnavailableError):
+        await adapter.generate_conversation_response([{"role": "user", "content": "Hello"}])
+
+
+@pytest.mark.asyncio
+async def test_gemini_conversation_adapter_rejects_malformed_provider_response(monkeypatch):
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": "not-json"}]}}]},
+        )
+    )
+    client_factory = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.adapters.llm.gemini.httpx.AsyncClient",
+        lambda **kwargs: client_factory(transport=transport, **kwargs),
+    )
+    adapter = GeminiAdapter(api_key="unit-test-gemini-key")
+    with pytest.raises(GeminiResponseError):
+        await adapter.generate_conversation_response([{"role": "user", "content": "Hello"}])
+
+
+@pytest.mark.asyncio
+async def test_gemini_conversation_adapter_surfaces_provider_and_timeout_failures(monkeypatch):
+    client_factory = httpx.AsyncClient
+    status_transport = httpx.MockTransport(
+        lambda _request: httpx.Response(429, json={"error": "details must stay private"})
+    )
+    monkeypatch.setattr(
+        "app.adapters.llm.gemini.httpx.AsyncClient",
+        lambda **kwargs: client_factory(transport=status_transport, **kwargs),
+    )
+    adapter = GeminiAdapter(api_key="unit-test-gemini-key")
+    with pytest.raises(GeminiProviderError):
+        await adapter.generate_conversation_response([{"role": "user", "content": "Hello"}])
+
+    timeout_transport = httpx.MockTransport(
+        lambda _request: (_ for _ in ()).throw(httpx.ReadTimeout("private"))
+    )
+    monkeypatch.setattr(
+        "app.adapters.llm.gemini.httpx.AsyncClient",
+        lambda **kwargs: client_factory(transport=timeout_transport, **kwargs),
+    )
+    with pytest.raises(GeminiTimeoutError):
+        await adapter.generate_conversation_response([{"role": "user", "content": "Hello"}])
 
 
 @pytest.mark.asyncio

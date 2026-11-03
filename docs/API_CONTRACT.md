@@ -47,41 +47,60 @@ Returns the operational health of the FastAPI service and diagnostics for config
 
 ## 2. Contextual Chat & Intelligence
 
-### `POST /api/v1/chat`
-Sends a user message into the orchestrator. Retrieves relevant memories, builds context, requests response from Gemini, and detects candidate memories.
+### `POST /api/v1/conversations`
+Sends a message to Gemini and persists the user/assistant exchange in a bounded
+conversation history. It retrieves bounded, owner-scoped Walrus memories for
+contextual grounding but does not save or modify memories.
 
 #### Request Body
 ```json
 {
-  "message": "I need to complete my portfolio before Friday. I have 90 minutes each evening.",
-  "session_id": "sess_891823",
-  "user_id": "usr_default"
+  "message": "A message of at most 4,000 characters",
+  "conversation_id": null,
+  "idempotency_key": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 }
 ```
+
+`conversation_id` is omitted or `null` to start a conversation. Subsequent
+messages include the returned identifier. The idempotency key is reused for a
+retry of the same request. Client-provided owner IDs and namespaces are not
+accepted. The API supports either the existing visitor credential or PAT
+authenticator; visitor and PAT conversations have separate ownership scopes.
 
 #### Response `200 OK`
 ```json
 {
-  "answer": "I have noted that your portfolio is due this Friday and you have 90-minute evening blocks available. Would you like me to save this commitment to your memory so I can remind you and track progress?",
-  "session_id": "sess_891823",
-  "evidence": [
-    {
-      "kind": "memory",
-      "reference": "mem_001",
-      "summary": "User prefers evening work sessions"
-    }
+  "conversation_id": "conversation UUID",
+  "version": 1,
+  "messages": [
+    {"id": "message UUID", "role": "user", "content": "Submitted message", "created_at": "UTC timestamp"},
+    {"id": "message UUID", "role": "assistant", "content": "Gemini-generated response", "created_at": "UTC timestamp"}
   ],
-  "candidate_memories": [
-    {
-      "type": "commitment",
-      "text": "Portfolio submission target is 2026-11-06; 90 minutes dedicated each evening.",
-      "category": "commitments",
-      "confidence": 0.95
-    }
-  ],
-  "needs_confirmation": true
+  "memory_context": {"status": "retrieved", "count": 2}
 }
 ```
+
+`GET /api/v1/conversations/{conversation_id}` returns the latest 40 messages for
+that same authenticated owner scope. Gemini receives at most the latest 20
+messages and 24,000 characters of prior context; each incoming message is
+limited to 4,000 characters, and each conversation stores at most 100 exchanges.
+Concurrent writes use a database version check; a stale write returns `409`.
+Retries with the same idempotency key return the already-persisted exchange.
+Memory recall is performed through the authenticated owner's existing namespace
+and filters local Trash/deletion-in-progress records. The API returns only a
+truthful retrieval status (`retrieved`, `empty`, `unavailable`, or
+`not_retrieved`) and a bounded item count; it never exposes memory IDs, raw
+records, or namespace values. Retrieved text is bounded to five items and 10,000
+characters total. Recall failure does not block conversation generation and
+does not authorize unsupported claims of personal recall.
+Missing Gemini credentials/provider availability return a safe `503`, provider
+timeouts return `504`, and malformed model responses return `502`. Failed
+provider calls do not fabricate or persist assistant replies.
+
+The Next.js app uses same-origin `/api/bff/conversations` and
+`/api/bff/conversations/{conversation_id}` routes. Conversation history remains
+separate from permanent Walrus memory; no conversation message is automatically
+saved as a memory.
 
 ---
 
@@ -317,7 +336,6 @@ Malformed address, limit, or cursor inputs return `422`. Missing provider
 configuration and provider timeouts/connection failures return `503`;
 provider HTTP, GraphQL, and malformed-response failures return `502`. Errors
 never include upstream bodies, API keys, or credentials:
-
 ```json
 {
   "error": "provider_unavailable",
@@ -325,3 +343,43 @@ never include upstream bodies, API keys, or credentials:
   "operation_id": null
 }
 ```
+
+### Visitor sessions and memory BFF
+
+The Next.js app supports the existing PAT session and an isolated anonymous
+visitor session. `GET /api/session` returns safe metadata for the active session
+(`kind: "pat"` or `kind: "visitor"`); visitor responses omit the internal User
+ID and all credential material. The existing `POST` and `DELETE /api/session`
+PAT sign-in/logout contract remains in place.
+
+The same-origin visitor session BFF uses:
+
+- `POST /api/session/visitor` to reuse a valid PAT/visitor session or bootstrap
+  a visitor when one is not active.
+- `PATCH /api/session/visitor` to rotate the current visitor credential.
+- `PUT /api/session/visitor` to explicitly reset to a new isolated identity.
+- `DELETE /api/session/visitor` to revoke the current visitor credential.
+
+The BFF keeps the PAT cookie (`orhrex_session`, production
+`__Host-orhrex_session`) separate from the visitor cookie
+(`orhrex_visitor_session`, production
+`__Host-orhrex_visitor_session`). Both are `HttpOnly`, `SameSite=Lax`, path `/`,
+and host-only; production cookies are `Secure`. The visitor browser cookie is
+limited to one year even though the backend visitor identity and credential
+have no scheduled expiry. Raw visitor credentials are only returned by the
+backend to the BFF, which stores them in the HttpOnly cookie and never includes
+them in browser JSON.
+
+Memory BFF requests select one cookie, preferring the PAT cookie when present,
+and forward one bearer credential to the existing owner-scoped memory API.
+PAT and visitor credentials are resolved only by their matching backend
+authenticators. Sui BFF routes continue to use their existing PAT-authenticated
+backend behavior.
+
+All state-changing session and memory BFF requests require a matching `Origin`.
+When `ORHEX_APP_ORIGIN` is configured, it is the canonical origin used for the
+comparison. Production deployments must configure `ORHEX_APP_ORIGIN` to the
+public HTTPS application origin. The BFF does not derive trust from arbitrary
+`X-Forwarded-Host` or `X-Forwarded-Proto` values; the deployment proxy must
+route the configured public origin to the Next.js app without relying on those
+headers for the application's CSRF decision.

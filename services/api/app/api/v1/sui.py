@@ -1,11 +1,13 @@
 """Authenticated read-only Sui wallet data endpoints."""
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import ValidationError
 
 from app.adapters.tatum.sui_rpc import TatumSuiAdapter, TatumSuiError
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_current_memory_user
+from app.core.config import settings
+from app.core.rate_limit import SensitiveEndpointRateLimiter
 from app.models.domain import User
 from app.models.schemas import (
     SuiAddress,
@@ -19,7 +21,27 @@ from app.models.schemas import (
 
 logger = logging.getLogger("orhex.api.sui")
 router = APIRouter(prefix="/sui", tags=["Sui Read-Only"])
+_sui_rate_limiter = SensitiveEndpointRateLimiter(
+    requests_per_minute=settings.AUTH_RATE_LIMIT_PER_MINUTE
+)
 _sui_adapter = TatumSuiAdapter()
+
+
+def _client_key(request: Request) -> str:
+    return request.client.host if request.client is not None else "unknown"
+
+
+async def _enforce_rate_limit(request: Request) -> None:
+    allowed, retry_after = await _sui_rate_limiter.check(_client_key(request))
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "rate_limited",
+                "message": "Too many Sui requests. Please retry shortly.",
+            },
+            headers={"Retry-After": str(retry_after)},
+        )
 
 
 def _pagination_query(
@@ -83,11 +105,13 @@ def _require_provider_configuration() -> None:
     responses={401: {}, 422: {}, 502: {}, 503: {}},
 )
 async def get_wallet_balances(
+    request: Request,
     address: SuiAddress,
     pagination: SuiPaginationQuery = Depends(_pagination_query),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_current_memory_user),
 ):
     """Return one bounded page of public coin balances for a Sui address."""
+    await _enforce_rate_limit(request)
     _require_provider_configuration()
     try:
         result = await _sui_adapter.get_wallet_balances(
@@ -106,11 +130,13 @@ async def get_wallet_balances(
     responses={401: {}, 422: {}, 502: {}, 503: {}},
 )
 async def get_wallet_objects(
+    request: Request,
     address: SuiAddress,
     pagination: SuiPaginationQuery = Depends(_pagination_query),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_current_memory_user),
 ):
     """Return one bounded page of public objects owned by a Sui address."""
+    await _enforce_rate_limit(request)
     _require_provider_configuration()
     try:
         result = await _sui_adapter.get_owned_objects(

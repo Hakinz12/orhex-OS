@@ -224,6 +224,69 @@ def _migrate_user_memory_trash_retention(connection) -> None:
             )
 
 
+def _migrate_anonymous_visitor_identity(connection) -> None:
+    """Create additive visitor identity tables and indexes for existing databases."""
+    inspector = inspect(connection)
+    if "users" not in inspector.get_table_names():
+        return
+
+    identity_table = Base.metadata.tables["anonymous_visitor_identities"]
+    credential_table = Base.metadata.tables["anonymous_visitor_credentials"]
+    identity_table.create(connection, checkfirst=True)
+    credential_table.create(connection, checkfirst=True)
+
+    for table in (identity_table, credential_table):
+        for index in table.indexes:
+            index.create(connection, checkfirst=True)
+
+
+def _migrate_wallet_verification(connection) -> None:
+    """Create the additive wallet challenge and wallet association tables."""
+    inspector = inspect(connection)
+    if "users" not in inspector.get_table_names():
+        return
+
+    challenge_table = Base.metadata.tables["wallet_verification_challenges"]
+    association_table = Base.metadata.tables["wallet_associations"]
+    challenge_table.create(connection, checkfirst=True)
+    association_table.create(connection, checkfirst=True)
+
+    for table in (challenge_table, association_table):
+        for index in table.indexes:
+            index.create(connection, checkfirst=True)
+
+
+def _migrate_conversations(connection) -> None:
+    """Create additive conversation tables without changing existing records."""
+    inspector = inspect(connection)
+    if "users" not in inspector.get_table_names():
+        return
+
+    conversation_table = Base.metadata.tables["conversations"]
+    message_table = Base.metadata.tables["conversation_messages"]
+    conversation_table.create(connection, checkfirst=True)
+    message_table.create(connection, checkfirst=True)
+
+    for table in (conversation_table, message_table):
+        for index in table.indexes:
+            index.create(connection, checkfirst=True)
+
+    columns = {
+        column["name"]
+        for column in inspect(connection).get_columns("conversations")
+    }
+    if "memory_context_status" not in columns:
+        connection.exec_driver_sql(
+            "ALTER TABLE conversations ADD COLUMN memory_context_status "
+            "VARCHAR(24) NOT NULL DEFAULT 'not_retrieved'"
+        )
+    if "memory_context_count" not in columns:
+        connection.exec_driver_sql(
+            "ALTER TABLE conversations ADD COLUMN memory_context_count "
+            "INTEGER NOT NULL DEFAULT 0"
+        )
+
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Dependency for providing a transactional async database session."""
     async with AsyncSessionLocal() as session:
@@ -242,3 +305,6 @@ async def init_db() -> None:
         await conn.run_sync(_migrate_memory_sync_records)
         await conn.run_sync(_migrate_user_access_tokens)
         await conn.run_sync(_migrate_user_memory_trash_retention)
+        await conn.run_sync(_migrate_anonymous_visitor_identity)
+        await conn.run_sync(_migrate_wallet_verification)
+        await conn.run_sync(_migrate_conversations)

@@ -53,6 +53,23 @@ export interface ChatMessage {
   candidateMemories?: CandidateMemory[];
 }
 
+export interface ConversationMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+}
+
+export interface ConversationResponse {
+  conversation_id: string;
+  version: number;
+  messages: ConversationMessage[];
+  memory_context: {
+    status: "retrieved" | "empty" | "unavailable" | "not_retrieved";
+    count: number;
+  };
+}
+
 export interface MemoryRecord {
   id: string;
   text: string;
@@ -66,10 +83,22 @@ export interface MemoryRecord {
   blob_id?: string;
 }
 
-export interface SessionStatus {
-  authenticated: boolean;
+export interface PatSessionStatus {
+  authenticated: true;
+  kind: "pat";
   expiresAt: string;
 }
+
+export interface VisitorSessionStatus {
+  authenticated: true;
+  kind: "visitor";
+  visitorIdentityId: string;
+  createdAt: string;
+  credentialCreatedAt: string;
+  credentialExpiresAt: string | null;
+}
+
+export type SessionStatus = PatSessionStatus | VisitorSessionStatus;
 
 export interface MemoryServiceStatus {
   status: string;

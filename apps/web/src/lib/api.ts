@@ -3,11 +3,13 @@ import type {
   MemoryFolderResponse,
   MemoryRecallResponse,
   MemoryServiceStatus,
+  ConversationResponse,
   SessionStatus,
 } from "./types";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
 const MEMORY_WRITE_TIMEOUT_MS = 170_000;
+const CONVERSATION_TIMEOUT_MS = 45_000;
 
 export class ApiError extends Error {
   constructor(message: string, public readonly status: number) {
@@ -69,6 +71,22 @@ export function createSession(token: string): Promise<SessionStatus> {
   });
 }
 
+export function bootstrapVisitorSession(): Promise<SessionStatus> {
+  return requestJson("/api/session/visitor", { method: "POST" });
+}
+
+export function rotateVisitorSession(): Promise<SessionStatus> {
+  return requestJson("/api/session/visitor", { method: "PATCH" });
+}
+
+export function resetVisitorSession(): Promise<SessionStatus> {
+  return requestJson("/api/session/visitor", { method: "PUT" });
+}
+
+export async function endVisitorSession(): Promise<void> {
+  await requestJson("/api/session/visitor", { method: "DELETE" });
+}
+
 export async function logout(): Promise<void> {
   await requestJson("/api/session", { method: "DELETE" });
 }
@@ -94,6 +112,31 @@ export function recallMemories(query: string, limit = 5): Promise<MemoryRecallRe
     method: "POST",
     body: JSON.stringify({ query, limit }),
   });
+}
+
+export function getConversation(conversationId: string): Promise<ConversationResponse> {
+  return requestJson(
+    `/api/bff/conversations/${encodeURIComponent(conversationId)}`,
+    undefined,
+    false,
+    CONVERSATION_TIMEOUT_MS,
+  );
+}
+
+export function sendConversationMessage(input: {
+  message: string;
+  conversation_id?: string;
+  idempotency_key: string;
+}): Promise<ConversationResponse> {
+  return requestJson(
+    "/api/bff/conversations",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+    false,
+    CONVERSATION_TIMEOUT_MS,
+  );
 }
 
 export function getMemoryOperation(operationId: string): Promise<MemoryOperation> {

@@ -3,34 +3,51 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRightIcon, ShieldIcon } from "@/components/icons";
+import { useSession } from "@/components/session-provider";
 import { PageHeading } from "@/components/ui";
-import { ApiError, getSession, logout } from "@/lib/api";
-import type { SessionStatus } from "@/lib/types";
+import { ApiError } from "@/lib/api";
 import { WalletConnectionPanel } from "@/components/wallet-connection";
 
 export default function SettingsPage() {
   const router = useRouter();
-  const [session, setSession] = useState<SessionStatus | null>(null);
+  const {
+    session,
+    refresh,
+    rotateVisitor,
+    resetVisitor,
+    endVisitor,
+    signOutPat,
+  } = useSession();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    void getSession()
-      .then(setSession)
-      .catch((reason: unknown) => setError(reason instanceof ApiError ? reason.message : "Session status is unavailable."));
-  }, []);
+    void refresh();
+  }, [refresh]);
 
-  async function signOut() {
+  async function runSessionAction(action: () => Promise<void>, destination?: string) {
     setBusy(true);
     setError(null);
     try {
-      await logout();
-      router.replace("/signin");
-      router.refresh();
+      await action();
+      if (destination) {
+        router.replace(destination);
+        router.refresh();
+      }
     } catch (reason) {
-      setError(reason instanceof ApiError ? reason.message : "Sign-out could not be completed.");
+      setError(reason instanceof ApiError ? reason.message : "The session update could not be completed.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  function confirmReset() {
+    if (
+      window.confirm(
+        "Start a new isolated visitor identity? Existing memories remain with the old identity and are not deleted.",
+      )
+    ) {
+      void runSessionAction(resetVisitor);
     }
   }
 
@@ -39,7 +56,7 @@ export default function SettingsPage() {
       <PageHeading
         eyebrow="Settings"
         title="Your space, your rules."
-        description="Review the current secure session and sign out of this browser."
+        description="Review your session and manage its credentials or visitor identity."
       />
       <section className="surface-card p-5 sm:p-7">
         <div className="flex items-start gap-3">
@@ -47,21 +64,50 @@ export default function SettingsPage() {
           <div className="min-w-0 flex-1">
             <h2 className="text-[13px] font-semibold text-[#e4eaf0]">Secure browser session</h2>
             <p className="mt-2 text-[11px] leading-5 text-[#8997a5]">
-              The backend validates the provisioned bearer token. The browser receives only an HttpOnly, SameSite cookie; the token is not exposed to page scripts.
+              Credentials are kept in HttpOnly, SameSite cookies and are never exposed to page scripts.
             </p>
             <div className="mt-5 rounded-xl border border-[#26323e] bg-[#0f151c] p-4">
-              {session && (
+              {session.status === "pat" && session.session.kind === "pat" && (
                 <>
-                  <p className="text-[11px] font-medium text-[#c5d0d9]">Session active</p>
-                  <p className="mt-1 text-[10px] text-[#8493a3]">Backend token expires {new Date(session.expiresAt).toLocaleString()}.</p>
+                  <p className="text-[11px] font-medium text-[#c5d0d9]">PAT session active</p>
+                  <p className="mt-1 text-[10px] text-[#8493a3]">Backend token expires {new Date(session.session.expiresAt).toLocaleString()}.</p>
                 </>
               )}
-              {!session && !error && <p className="text-[11px] text-[#8493a3]">Checking session…</p>}
+              {session.status === "visitor" && session.session.kind === "visitor" && (
+                <>
+                  <p className="text-[11px] font-medium text-[#c5d0d9]">Visitor session active</p>
+                  <p className="mt-1 break-all text-[10px] text-[#8493a3]">Visitor identity: {session.session.visitorIdentityId}</p>
+                  <p className="mt-1 text-[10px] text-[#8493a3]">Identity created {new Date(session.session.createdAt).toLocaleString()}.</p>
+                  <p className="mt-1 text-[10px] text-[#8493a3]">
+                    Credential {session.session.credentialExpiresAt
+                      ? `expires ${new Date(session.session.credentialExpiresAt).toLocaleString()}.`
+                      : "has no scheduled expiry."}
+                  </p>
+                </>
+              )}
+              {session.status === "loading" && <p className="text-[11px] text-[#8493a3]">Checking session…</p>}
+              {session.status === "unauthenticated" && <p className="text-[11px] text-[#8493a3]">No session is currently active.</p>}
+              {session.status === "error" && <p role="alert" className="text-[11px] text-[#d9a7a3]">{session.message}</p>}
               {error && <p role="alert" className="text-[11px] text-[#d9a7a3]">{error}</p>}
             </div>
-            <button type="button" className="secondary-button mt-4" onClick={() => void signOut()} disabled={busy}>
-              {busy ? "Signing out…" : "Sign out"}
-            </button>
+            {session.status === "visitor" && (
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button type="button" className="secondary-button" onClick={() => void runSessionAction(rotateVisitor)} disabled={busy}>
+                  {busy ? "Updating…" : "Rotate credential"}
+                </button>
+                <button type="button" className="secondary-button" onClick={confirmReset} disabled={busy}>
+                  Reset visitor identity
+                </button>
+                <button type="button" className="secondary-button" onClick={() => void runSessionAction(endVisitor, "/signin")} disabled={busy}>
+                  End visitor session
+                </button>
+              </div>
+            )}
+            {session.status === "pat" && (
+              <button type="button" className="secondary-button mt-4" onClick={() => void runSessionAction(signOutPat, "/signin")} disabled={busy}>
+                {busy ? "Signing out…" : "Sign out"}
+              </button>
+            )}
           </div>
         </div>
       </section>

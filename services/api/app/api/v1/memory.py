@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.walrus.memwal import MemWalAdapter, WalrusAdapterError
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_current_memory_user
 from app.core.database import get_db
 from app.models.domain import MemorySyncRecord, User
 from app.services.memory_persistence import (
@@ -166,7 +166,7 @@ def _error(status_code: int, code: str, message: str, operation_id: Optional[str
 
 @router.get("/status")
 async def walrus_status(
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_current_memory_user),
 ):
     """Authenticated connection-health and readiness report."""
     return await _walrus.check_readiness()
@@ -188,7 +188,7 @@ async def remember_memory(
     req: RememberRequest,
     response: Response,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_memory_user),
 ):
     """Create an owned local operation before dispatching its Walrus write."""
     try:
@@ -251,7 +251,7 @@ async def remember_memory(
 async def recall_memories(
     req: RecallRequest,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_memory_user),
 ):
     """Perform semantic recall only in the authenticated user's namespace."""
     try:
@@ -286,7 +286,7 @@ async def recall_memories(
 async def list_memory_records(
     folder: str,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_memory_user),
 ):
     """List only this user's confirmed active memories or Trash records."""
     if folder not in {"active", "trash"}:
@@ -313,7 +313,7 @@ async def list_memory_records(
 async def memory_operation_status(
     record_id: str,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_memory_user),
 ):
     """Read an operation only if it belongs to the authenticated user."""
     try:
@@ -341,7 +341,7 @@ async def reconcile_operation(
     record_id: str,
     response: Response,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_memory_user),
 ):
     """Reconcile through SDK job-status lookup; never resubmit a write."""
     try:
@@ -384,7 +384,7 @@ async def reconcile_operation(
 async def delete_memory_operation(
     record_id: str,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_memory_user),
 ):
     try:
         record = await trash_memory(db, user_id=user.id, record_id=record_id)
@@ -406,7 +406,7 @@ async def delete_memory_operation(
 async def restore_memory_operation(
     record_id: str,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_memory_user),
 ):
     """Restore a trashed memory only for its authenticated owner."""
     try:
@@ -434,7 +434,7 @@ async def restore_memory_operation(
 async def permanently_delete_memory_operation(
     record_id: str,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_memory_user),
 ):
     """Check permanent-delete support without deleting remote data in Phase 1."""
     try:

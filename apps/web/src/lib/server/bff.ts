@@ -10,7 +10,9 @@ import {
   safeRecall,
   parseSuiPagination,
   safeSuiBackendResponse,
+  safeConversation,
   sessionCookieName,
+  visitorCookieName,
   validateSuiWalletAddress,
 } from "./bff-core.mjs";
 
@@ -23,14 +25,21 @@ export function jsonError(status: number, error: string, message: string) {
   );
 }
 
-export function clearSessionCookie(response: NextResponse) {
-  response.cookies.set(sessionCookieName(), "", clearedSessionCookieOptions());
+export function clearSessionCookie(response: NextResponse, token?: string) {
+  if (token?.startsWith("orv_")) {
+    response.cookies.set(visitorCookieName(), "", clearedSessionCookieOptions());
+  } else {
+    response.cookies.set(sessionCookieName(), "", clearedSessionCookieOptions());
+  }
   return response;
 }
 
 export async function readSessionToken() {
   const cookieStore = await cookies();
-  return cookieStore.get(sessionCookieName())?.value ?? null;
+  const patToken = cookieStore.get(sessionCookieName())?.value;
+  const visitorToken = cookieStore.get(visitorCookieName())?.value;
+  if (patToken && visitorToken) return null;
+  return patToken ?? visitorToken ?? null;
 }
 
 export async function proxyMemoryOperation(
@@ -63,7 +72,10 @@ export async function proxyMemoryOperation(
   else safePayload = safeRecall(payload);
 
   if (response.status === 401) {
-    return clearSessionCookie(jsonError(401, "unauthenticated", "Your session is invalid or expired."));
+    return clearSessionCookie(
+      jsonError(401, "unauthenticated", "Your session is invalid or expired."),
+      token,
+    );
   }
 
   if (response.status === 429) {
@@ -121,6 +133,59 @@ export async function proxySuiWalletData(
     status: safeResult.status,
     headers: { "Cache-Control": "no-store" },
   });
-  if (result.response.status === 401) return clearSessionCookie(response);
+  if (result.response.status === 401) return clearSessionCookie(response, token);
   return response;
+}
+
+export async function proxyConversationRequest(
+  token: string,
+  path: string,
+  method: "GET" | "POST",
+  body?: Record<string, unknown>,
+) {
+  const result = await callBackend(path, { token, method, body });
+  if (result.kind === "unavailable") {
+    return jsonError(503, "service_unavailable", "The assistant service is temporarily unavailable.");
+  }
+  if (result.kind === "rejected") {
+    return jsonError(400, "invalid_request", "The conversation request is invalid.");
+  }
+
+  if (result.response.status === 401) {
+    return clearSessionCookie(
+      jsonError(401, "unauthenticated", "Your session is invalid or expired."),
+      token,
+    );
+  }
+  if (!result.response.ok) {
+    const errors: Record<number, { error: string; message: string }> = {
+      404: { error: "not_found", message: "The conversation was not found." },
+      409: { error: "conversation_conflict", message: "The conversation changed. Reload it and retry." },
+      422: { error: "invalid_request", message: "The conversation request is invalid." },
+      429: { error: "rate_limited", message: "Too many requests. Please retry shortly." },
+      502: { error: "assistant_error", message: "The assistant returned an unusable response. Please retry." },
+      503: { error: "assistant_unavailable", message: "The assistant is temporarily unavailable." },
+      504: { error: "assistant_timeout", message: "The assistant did not respond in time. Please retry." },
+    };
+    const mapped = errors[result.response.status] ?? errors[503];
+    return NextResponse.json(mapped, {
+      status: result.response.status in errors ? result.response.status : 503,
+      headers: { "Cache-Control": "no-store" },
+    });
+  }
+
+  let payload: unknown;
+  try {
+    payload = await result.response.json();
+  } catch {
+    return jsonError(502, "invalid_backend_response", "The assistant service returned an invalid response.");
+  }
+  const safePayload = safeConversation(payload);
+  if (!safePayload) {
+    return jsonError(502, "invalid_backend_response", "The assistant service returned an invalid response.");
+  }
+  return NextResponse.json(safePayload, {
+    status: result.response.status,
+    headers: { "Cache-Control": "no-store" },
+  });
 }

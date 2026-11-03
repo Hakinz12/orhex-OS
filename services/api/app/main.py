@@ -11,8 +11,11 @@ from app.core.database import AsyncSessionLocal, init_db
 from app.adapters.walrus.memwal import close_walrus_client
 from app.api.v1.health import router as health_router
 from app.api.v1.auth import router as auth_router
+from app.api.v1.visitor import router as visitor_router
 from app.api.v1.memory import router as memory_router
 from app.api.v1.sui import router as sui_router
+from app.api.v1.wallet import router as wallet_router
+from app.api.v1.conversations import router as conversations_router
 from app.api.v1.memory import ErrorResponse
 from app.services.memory_persistence import recover_pending_operations
 
@@ -58,6 +61,7 @@ app = FastAPI(
 async def limit_memory_api_requests(request: Request, call_next):
     if (
         request.url.path.startswith("/api/v1/memory/")
+        or request.url.path.startswith("/api/v1/conversations")
         or request.url.path == "/api/v1/auth/session"
     ):
         peer = request.client.host if request.client is not None else "unknown"
@@ -98,10 +102,13 @@ async def handle_http_error(_request: Request, exc: HTTPException):
         message=message,
         operation_id=operation_id,
     )
+    body = payload.model_dump()
+    if isinstance(detail, dict) and "code" in detail:
+        body["code"] = detail["code"]
     headers = exc.headers or {}
     return JSONResponse(
         status_code=exc.status_code,
-        content=payload.model_dump(),
+        content=body,
         headers=headers,
     )
 
@@ -129,8 +136,11 @@ app.add_middleware(
 # Register API routers
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
+app.include_router(visitor_router, prefix="/api/v1")
 app.include_router(memory_router, prefix="/api/v1")
 app.include_router(sui_router, prefix="/api/v1")
+app.include_router(wallet_router, prefix="/api/v1")
+app.include_router(conversations_router, prefix="/api/v1")
 
 
 @app.get("/")

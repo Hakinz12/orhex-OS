@@ -1,0 +1,9 @@
+warning: in the working copy of 'apps/web/package-lock.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'apps/web/package.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'services/api/app/models/schemas.py', LF will be replaced by CRLF the next time Git touches it
+ apps/web/package-lock.json         | 417 [32m++++++++++++++++++++++++++++++++++++[m[31m-[m
+ apps/web/package.json              |   1 [32m+[m
+ apps/web/src/app/settings/page.tsx |   2 [32m+[m
+ docs/API_CONTRACT.md               | 185 [32m+++++++++++++++[m[31m-[m
+ services/api/app/models/schemas.py | 201 [32m+++++++++++++++++[m[31m-[m
+ 5 files changed, 797 insertions(+), 9 deletions(-)

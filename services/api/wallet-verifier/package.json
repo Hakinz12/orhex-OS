@@ -1,0 +1,11 @@
+{
+  "name": "orhex-sui-signature-verifier",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@mysten/sui": "2.38.0"
+  }
+}
