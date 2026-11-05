@@ -21,16 +21,22 @@ from app.core.config import settings
 from app.core.database import Base, _enable_sqlite_foreign_keys, get_db
 from app.core.rate_limit import SensitiveEndpointRateLimiter
 from app.main import handle_http_error
-from app.models.domain import WalletAssociation, WalletVerificationChallenge
+from app.models.domain import (
+    AnonymousVisitorCredential,
+    WalletAssociation,
+    WalletVerificationChallenge,
+)
 from app.services.anonymous_visitor_identity import (
     provision_visitor_identity,
     resolve_visitor_credential,
 )
 from app.services import wallet_verification
 from app.services.wallet_verification import (
+    WalletAssociationError,
     WalletVerificationUnavailableError,
     _challenge_message,
     normalize_sui_address,
+    resolve_verified_visitor_wallet,
     verify_personal_message_signature,
 )
 
@@ -285,6 +291,173 @@ async def test_wallet_signature_verification_success_and_replay(wallet_harness):
     )
     assert replay.status_code == 409
     assert replay.json()["code"] == "wallet_verification_failed"
+
+
+@pytest.mark.asyncio
+async def test_verified_wallet_resolution_requires_exact_user_and_visitor(wallet_harness):
+    visitor = await _provision_visitor(wallet_harness)
+    another_visitor = await _provision_visitor(wallet_harness)
+    challenge_id, signature = await _issue_and_sign(wallet_harness, visitor, 7)
+    response = await wallet_harness.client.post(
+        "/api/v1/wallet/verify-signature",
+        json={"challenge_id": challenge_id, "signature": signature},
+        headers=_visitor_headers(visitor),
+    )
+    assert response.status_code == 200
+
+    async with wallet_harness.factory() as session:
+        own_association = await resolve_verified_visitor_wallet(
+            session,
+            user_id=visitor.user.id,
+            visitor_identity_id=visitor.identity.id,
+        )
+        assert own_association is not None
+        assert own_association.canonical_address == response.json()["address"]
+
+        assert await resolve_verified_visitor_wallet(
+            session,
+            user_id=another_visitor.user.id,
+            visitor_identity_id=another_visitor.identity.id,
+        ) is None
+        assert await resolve_verified_visitor_wallet(
+            session,
+            user_id=visitor.user.id,
+            visitor_identity_id=another_visitor.identity.id,
+        ) is None
+        assert await resolve_verified_visitor_wallet(
+            session,
+            user_id=another_visitor.user.id,
+            visitor_identity_id=visitor.identity.id,
+        ) is None
+
+
+@pytest.mark.asyncio
+async def test_expired_visitor_credential_cannot_verify_or_access_wallet_link(wallet_harness):
+    visitor = await _provision_visitor(wallet_harness)
+    challenge_id, signature = await _issue_and_sign(wallet_harness, visitor, 7)
+    verified = await wallet_harness.client.post(
+        "/api/v1/wallet/verify-signature",
+        json={"challenge_id": challenge_id, "signature": signature},
+        headers=_visitor_headers(visitor),
+    )
+    assert verified.status_code == 200
+
+    async with wallet_harness.factory() as session:
+        credential = await session.scalar(
+            select(AnonymousVisitorCredential).where(
+                AnonymousVisitorCredential.visitor_id == visitor.identity.id
+            )
+        )
+        credential.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        await session.commit()
+
+    denied = await wallet_harness.client.post(
+        "/api/v1/wallet/verify-challenge",
+        json={
+            "purpose": "wallet_link",
+            "network": "mainnet",
+            "address": verified.json()["address"],
+        },
+        headers=_visitor_headers(visitor),
+    )
+    assert denied.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_unverified_address_cannot_resolve_and_revoked_association_is_rejected(
+    wallet_harness,
+):
+    visitor = await _provision_visitor(wallet_harness)
+    address = _derive_wallet_address(7)
+    challenge = await wallet_harness.client.post(
+        "/api/v1/wallet/verify-challenge",
+        json={"purpose": "wallet_link", "network": "mainnet", "address": address},
+        headers=_visitor_headers(visitor),
+    )
+    assert challenge.status_code == 200
+
+    async with wallet_harness.factory() as session:
+        assert await resolve_verified_visitor_wallet(
+            session,
+            user_id=visitor.user.id,
+            visitor_identity_id=visitor.identity.id,
+        ) is None
+
+    message = base64.b64decode(challenge.json()["message"])
+    _, signature = _sign_message(message, 7)
+    verified = await wallet_harness.client.post(
+        "/api/v1/wallet/verify-signature",
+        json={"challenge_id": challenge.json()["challenge_id"], "signature": signature},
+        headers=_visitor_headers(visitor),
+    )
+    assert verified.status_code == 200
+
+    async with wallet_harness.factory() as session:
+        association = await session.scalar(select(WalletAssociation))
+        association.revoked_at = datetime.now(timezone.utc)
+        await session.commit()
+        assert await resolve_verified_visitor_wallet(
+            session,
+            user_id=visitor.user.id,
+            visitor_identity_id=visitor.identity.id,
+        ) is None
+
+
+@pytest.mark.asyncio
+async def test_verified_wallet_network_must_match_tatum_configuration(
+    wallet_harness,
+    monkeypatch,
+):
+    visitor = await _provision_visitor(wallet_harness)
+    challenge_id, signature = await _issue_and_sign(wallet_harness, visitor, 7)
+    response = await wallet_harness.client.post(
+        "/api/v1/wallet/verify-signature",
+        json={"challenge_id": challenge_id, "signature": signature},
+        headers=_visitor_headers(visitor),
+    )
+    assert response.status_code == 200
+
+    monkeypatch.setattr(settings, "SUI_NETWORK", "testnet")
+    async with wallet_harness.factory() as session:
+        with pytest.raises(WalletAssociationError, match="configured Sui network"):
+            await resolve_verified_visitor_wallet(
+                session,
+                user_id=visitor.user.id,
+                visitor_identity_id=visitor.identity.id,
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("chain", "ethereum"), ("network", "testnet")],
+)
+async def test_invalid_verified_wallet_chain_or_network_is_rejected(
+    wallet_harness,
+    monkeypatch,
+    field,
+    value,
+):
+    visitor = await _provision_visitor(wallet_harness)
+    challenge_id, signature = await _issue_and_sign(wallet_harness, visitor, 7)
+    response = await wallet_harness.client.post(
+        "/api/v1/wallet/verify-signature",
+        json={"challenge_id": challenge_id, "signature": signature},
+        headers=_visitor_headers(visitor),
+    )
+    assert response.status_code == 200
+
+    monkeypatch.setattr(settings, "SUI_NETWORK", "mainnet")
+    async with wallet_harness.factory() as session:
+        association = await session.scalar(select(WalletAssociation))
+        setattr(association, field, value)
+        await session.commit()
+        with pytest.raises(WalletAssociationError):
+            await resolve_verified_visitor_wallet(
+                session,
+                user_id=visitor.user.id,
+                visitor_identity_id=visitor.identity.id,
+            )
 
 
 @pytest.mark.asyncio

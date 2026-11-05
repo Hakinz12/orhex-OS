@@ -17,7 +17,9 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.domain import (
+    AnonymousVisitorIdentity,
     WalletAssociation,
     WalletVerificationChallenge,
     generate_uuid,
@@ -66,6 +68,10 @@ class WalletAlreadyLinkedError(WalletVerificationError):
     """The wallet is already linked to a different visitor identity."""
 
 
+class WalletAssociationError(WalletVerificationError):
+    """A stored wallet association is invalid for the configured Sui network."""
+
+
 def normalize_sui_address(value: str) -> str:
     if not isinstance(value, str):
         raise InvalidWalletChallengeError("Wallet address is required.")
@@ -78,6 +84,69 @@ def normalize_sui_address(value: str) -> str:
     if any(character not in "0123456789abcdefABCDEF" for character in body):
         raise InvalidWalletChallengeError("Wallet address is invalid.")
     return "0x" + body.lower().zfill(64)
+
+
+async def resolve_verified_visitor_wallet(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    visitor_identity_id: str,
+) -> WalletAssociation | None:
+    """Resolve only the active verified wallet owned by this exact visitor and user."""
+    if not user_id or not visitor_identity_id:
+        raise ValueError("Authenticated user and visitor identity are required.")
+
+    association = await session.scalar(
+        select(WalletAssociation)
+        .join(
+            AnonymousVisitorIdentity,
+            AnonymousVisitorIdentity.id == WalletAssociation.visitor_identity_id,
+        )
+        .where(
+            WalletAssociation.user_id == user_id,
+            WalletAssociation.visitor_identity_id == visitor_identity_id,
+            AnonymousVisitorIdentity.user_id == user_id,
+            AnonymousVisitorIdentity.id == visitor_identity_id,
+            WalletAssociation.revoked_at.is_(None),
+        )
+    )
+    if association is None:
+        return None
+
+    configured_network = settings.SUI_NETWORK
+    if not isinstance(configured_network, str):
+        raise WalletAssociationError("The configured Sui network is invalid.")
+    configured_network = configured_network.strip().casefold()
+    if configured_network not in SUPPORTED_SUI_NETWORKS:
+        raise WalletAssociationError("The configured Sui network is invalid.")
+    if (
+        association.chain != _WALLET_CHAIN
+        or not isinstance(association.network, str)
+        or association.network.casefold() != configured_network
+    ):
+        raise WalletAssociationError(
+            "The verified wallet association does not match the configured Sui network."
+        )
+    try:
+        if normalize_sui_address(association.canonical_address) != association.canonical_address:
+            raise WalletAssociationError("The verified wallet address is not canonical.")
+    except InvalidWalletChallengeError as exc:
+        raise WalletAssociationError("The verified wallet address is invalid.") from exc
+
+    verified_at = association.verified_at
+    if not isinstance(verified_at, datetime):
+        raise WalletAssociationError("The verified wallet association has an invalid timestamp.")
+    if verified_at.tzinfo is None:
+        verified_at = verified_at.replace(tzinfo=timezone.utc)
+    try:
+        is_future = verified_at > _utc_now()
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise WalletAssociationError(
+            "The verified wallet association has an invalid timestamp."
+        ) from exc
+    if is_future:
+        raise WalletAssociationError("The verified wallet association has an invalid timestamp.")
+    return association
 
 
 def _utc_now() -> datetime:
@@ -361,7 +430,10 @@ async def consume_wallet_challenge(
         )
     )
     linked = existing.scalar_one_or_none()
-    if linked is not None and linked.visitor_identity_id != visitor_identity_id:
+    if linked is not None and (
+        linked.visitor_identity_id != visitor_identity_id
+        or linked.user_id != user_id
+    ):
         await session.rollback()
         raise WalletAlreadyLinkedError("This wallet is already linked to another visitor identity.")
 
@@ -372,7 +444,10 @@ async def consume_wallet_challenge(
         )
     )
     current = visitor_link.scalar_one_or_none()
-    if current is not None and current.canonical_address != challenge.canonical_address:
+    if current is not None and (
+        current.user_id != user_id
+        or current.canonical_address != challenge.canonical_address
+    ):
         await session.rollback()
         raise WalletAlreadyLinkedError("This visitor identity already has a verified wallet.")
 
