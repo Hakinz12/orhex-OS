@@ -43,11 +43,13 @@ export default function WorkspacePage() {
   const [conversationBusy, setConversationBusy] = useState(false);
   const [conversationError, setConversationError] = useState<string | null>(null);
   const [chatDraft, setChatDraft] = useState("");
+  const [includeWalletContext, setIncludeWalletContext] = useState(false);
   const conversationRequestId = useRef(0);
   const pendingChatRequest = useRef<{
     message: string;
     idempotency_key: string;
     conversation_id?: string;
+    include_wallet_context: boolean;
   } | null>(null);
 
   async function refreshMemoryStatus() {
@@ -210,6 +212,7 @@ export default function WorkspacePage() {
       pendingChatRequest.current = {
         message,
         idempotency_key: crypto.randomUUID(),
+        include_wallet_context: includeWalletContext,
         ...(conversation ? { conversation_id: conversation.conversation_id } : {}),
       };
     }
@@ -220,6 +223,7 @@ export default function WorkspacePage() {
       pendingChatRequest.current = null;
       setConversation(response);
       setChatDraft("");
+      setIncludeWalletContext(false);
       try {
         window.localStorage.setItem("orhex-conversation-id", response.conversation_id);
       } catch {
@@ -250,6 +254,7 @@ export default function WorkspacePage() {
     }
     setConversation(null);
     setChatDraft("");
+    setIncludeWalletContext(false);
     setConversationError(null);
   }
 
@@ -380,6 +385,23 @@ export default function WorkspacePage() {
           </div>
         )}
         <form onSubmit={submitChat} className="space-y-3 border-t border-[#202a34] p-5 sm:p-7">
+          <label className="flex items-start gap-2 text-[11px] leading-5 text-[#aebbc7]">
+            <input
+              type="checkbox"
+              className="mt-1 accent-[#b8d2e5]"
+              checked={includeWalletContext}
+              onChange={(event) => setIncludeWalletContext(event.target.checked)}
+              disabled={
+                conversationLoading ||
+                conversationBusy ||
+                loadFailureBlocksSending ||
+                pendingChatRequest.current !== null
+              }
+            />
+            <span>
+              Include my verified Sui wallet snapshot with this message. If enabled, the server may share the verified wallet address, network, and bounded read-only balances with Gemini for this request. No wallet data is shared by default; this does not authorize signing or transfers.
+            </span>
+          </label>
           <label htmlFor="workspace-chat-message" className="block text-[11px] font-medium text-[#b8c4ce]">Message</label>
           <textarea
             id="workspace-chat-message"

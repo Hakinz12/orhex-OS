@@ -40,8 +40,9 @@ There is no separate typecheck script; `npm run build` performs TypeScript check
 
 ## Current implementation state
 
-- Only the `health`, `auth`, and `memory` routers are mounted in `services/api/app/main.py`.
-- `docs/API_CONTRACT.md` and `docs/ARCHITECTURE.md` describe planned chat, briefing, anticipation, and Sui-wallet endpoints that are not implemented. Do not assume those routes or service modules exist; verify against `app/api/v1/` and `app/main.py`.
+- The API mounts the health, auth, memory, visitor, wallet, Sui, conversations, anticipation, tasks, and orchestration routers in `services/api/app/main.py`.
+- Anticipation, task/action, orchestration, and Sui blockchain-intelligence endpoints are implemented; verify routes against `app/api/v1/` and `app/main.py` rather than relying on older architecture diagrams.
+- Conversation requests retrieve owner-scoped Walrus memory. Verified visitor wallet context is retrieved server-side only when the request explicitly opts in; it is bounded, read-only, and not persisted to conversation history or Walrus.
 - Backend tests use fake adapters and in-memory SQLite, so they do not need real API keys or network access.
 
 ## Security and auth invariants
@@ -50,6 +51,7 @@ There is no separate typecheck script; `npm run build` performs TypeScript check
 - Ownership and the Walrus namespace are derived from the bearer token's database user. Request bodies use `extra="forbid"` and must not accept `user_id` or `namespace` from clients.
 - The browser talks only to same-origin BFF routes (`/api/session`, `/api/bff/memory/*`). The bearer token is stored in an HttpOnly cookie server-side; never expose it to client components, `localStorage`, or `NEXT_PUBLIC_*`.
 - State-changing BFF routes enforce same-origin requests.
+- Wallet context sharing with Gemini is opt-in and defaults to off. Never accept browser-supplied wallet balances or identity as trusted context; resolve only the authenticated visitor's verified, owner-scoped wallet association server-side.
 - Production requires HTTPS `API_PUBLIC_URL`, explicit HTTPS `CORS_ORIGINS`, and an HTTPS `ORHEX_API_BASE_URL` for the frontend.
 
 ## Data and integrations

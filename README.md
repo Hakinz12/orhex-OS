@@ -164,3 +164,15 @@ pytest -v
 - **No Custody:** ORHEX OS will never ask for or store wallet seed phrases or private keys.
 - **Data Minimization:** No indiscriminate logging of chat conversations. Atomic facts are classified and stored with consent.
 - **Isolated Namespaces:** User memories are partitioned strictly by authenticated user namespace.
+
+## Task & Action Engine
+
+The LifeOS task workspace is available at `/tasks`. It supports owner-scoped task capture and completion, plus anticipation-derived action proposals that require explicit approval. See `docs/TASK_ACTION_ENGINE.md`.
+
+## Autonomous Orchestration Engine
+
+The v1 orchestration layer coordinates anticipation, task proposals, and the open-task queue into an explainable, owner-scoped next-step plan. See `docs/AUTONOMOUS_ORCHESTRATION_ENGINE.md` for API and safety boundaries.
+
+## Advanced Blockchain Intelligence
+
+ORHEX includes an explainable, read-only Sui wallet intelligence page at `/blockchain`. It combines Tatum-backed token balances, a bounded recent sent-transaction sample, and the latest checkpoint into deterministic review signals. It does not estimate fiat portfolio value, label wallets as malicious, sign transactions, or move funds. See `docs/ADVANCED_BLOCKCHAIN_INTELLIGENCE.md` for API details and limitations.

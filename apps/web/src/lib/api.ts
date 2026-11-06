@@ -5,6 +5,10 @@ import type {
   MemoryServiceStatus,
   ConversationResponse,
   SessionStatus,
+  AnticipationInsight,
+  OrhexTask,
+  ActionProposal,
+  OrchestrationRun,
 } from "./types";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
@@ -127,6 +131,7 @@ export function sendConversationMessage(input: {
   message: string;
   conversation_id?: string;
   idempotency_key: string;
+  include_wallet_context?: boolean;
 }): Promise<ConversationResponse> {
   return requestJson(
     "/api/bff/conversations",
@@ -173,4 +178,41 @@ export function checkPermanentDeleteSupport(operationId: string): Promise<Memory
     `/api/bff/memory/operations/${encodeURIComponent(operationId)}/permanent-delete`,
     { method: "POST" },
   );
+}
+
+export function fetchAnticipations(): Promise<AnticipationInsight[]> {
+  return requestJson("/api/bff/anticipation");
+}
+
+export function refreshAnticipations(): Promise<AnticipationInsight[]> {
+  return requestJson("/api/bff/anticipation/refresh", { method: "POST" });
+}
+
+export function updateAnticipation(
+  id: string,
+  status: "active" | "dismissed",
+): Promise<AnticipationInsight> {
+  return requestJson(`/api/bff/anticipation/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  });
+}
+
+
+export function fetchTasks(): Promise<OrhexTask[]> { return requestJson("/api/bff/tasks"); }
+export function createTask(input:{title:string;description?:string;priority:"low"|"medium"|"high";due_at?:string|null}):Promise<OrhexTask>{return requestJson("/api/bff/tasks",{method:"POST",body:JSON.stringify(input)});}
+export function updateTask(id:string,input:Partial<Pick<OrhexTask,"title"|"description"|"priority"|"status"|"due_at">>):Promise<OrhexTask>{return requestJson(`/api/bff/tasks/${encodeURIComponent(id)}`,{method:"PATCH",body:JSON.stringify(input)});}
+export function fetchActionProposals():Promise<ActionProposal[]>{return requestJson("/api/bff/tasks/actions");}
+export function prepareActionProposals():Promise<ActionProposal[]>{return requestJson("/api/bff/tasks/actions/prepare",{method:"POST"});}
+export function decideAction(id:string,status:"approved"|"dismissed"):Promise<ActionProposal>{return requestJson(`/api/bff/tasks/actions/${encodeURIComponent(id)}/approve`,{method:"POST",body:JSON.stringify({status})});}
+
+export function runOrchestration(): Promise<OrchestrationRun> {
+  return requestJson("/api/bff/orchestration/run", {
+    method: "POST",
+    body: JSON.stringify({ idempotency_key: crypto.randomUUID(), trigger: "dashboard" }),
+  });
+}
+
+export function fetchLatestOrchestration(): Promise<OrchestrationRun> {
+  return requestJson("/api/bff/orchestration/latest");
 }

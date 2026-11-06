@@ -207,11 +207,25 @@ test("backend downtime and insecure production configuration fail closed", async
     const validBody = validateConversationRequest({
       message: "  Hello ORHEX  ",
       idempotency_key: idempotencyKey,
+      include_wallet_context: true,
     });
     assert.deepEqual(validBody, {
       message: "Hello ORHEX",
       idempotency_key: idempotencyKey,
+      include_wallet_context: true,
     });
+    assert.deepEqual(validateConversationRequest({
+      message: "Hello ORHEX",
+      idempotency_key: idempotencyKey,
+    }), {
+      message: "Hello ORHEX",
+      idempotency_key: idempotencyKey,
+    });
+    assert.equal(validateConversationRequest({
+      message: "Check my wallet",
+      idempotency_key: idempotencyKey,
+      include_wallet_context: "true",
+    }), null);
     assert.equal(validateConversationRequest({
       message: "Hi",
       idempotency_key: idempotencyKey,
@@ -258,6 +272,7 @@ test("backend downtime and insecure production configuration fail closed", async
       `Bearer ${validVisitorCredential}`,
     );
     assert.equal(JSON.parse(observed.init.body).message, "Hello ORHEX");
+    assert.equal(JSON.parse(observed.init.body).include_wallet_context, true);
 
     const sanitized = safeConversation(await forwarded.response.json());
     assert.deepEqual(sanitized, {
@@ -425,6 +440,31 @@ test("only approved backend paths can be called", async () => {
   });
   assert.deepEqual(result, { kind: "rejected" });
   assert.equal(called, false);
+});
+
+test("orchestration BFF allowlist forwards only authenticated decision-cycle endpoints", async () => {
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, init });
+    return jsonResponse({ ok: true });
+  };
+  const run = await callBackend("/api/v1/orchestration/run", {
+    token: validToken, method: "POST", body: { idempotency_key: "cycle-key" },
+    env: backendEnv, fetchImpl,
+  });
+  const latest = await callBackend("/api/v1/orchestration/latest", {
+    token: validToken, method: "GET", env: backendEnv, fetchImpl,
+  });
+  const forbidden = await callBackend("/api/v1/orchestration/run", {
+    token: validToken, method: "GET", env: backendEnv, fetchImpl,
+  });
+  assert.equal(run.kind, "response");
+  assert.equal(latest.kind, "response");
+  assert.deepEqual(forbidden, { kind: "rejected" });
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].init.method, "POST");
+  assert.equal(requests[1].init.method, "GET");
+  assert.equal(requests[0].init.headers.get("authorization"), `Bearer ${validToken}`);
 });
 
 test("Sui BFF allowlist forwards only the two approved reads with the session bearer", async () => {

@@ -440,3 +440,89 @@ class SuiInsight(Base):
     last_checkpoint = Column(Integer, nullable=True)
     label = Column(String(128), nullable=True)
     last_fetched_at = Column(DateTime(timezone=True), default=utc_now)
+
+
+class AnticipationInsight(Base):
+    """Deduplicated, explainable insight generated from owner-owned evidence."""
+    __tablename__ = "anticipation_insights"
+    __table_args__ = (
+        Index("uq_anticipation_insights_user_fingerprint", "user_id", "fingerprint", unique=True),
+        Index("ix_anticipation_insights_user_status_due", "user_id", "status", "due_at"),
+    )
+
+    id = Column(String(64), primary_key=True, default=generate_uuid)
+    user_id = Column(String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    fingerprint = Column(String(64), nullable=False)
+    kind = Column(String(64), nullable=False)
+    source_type = Column(String(32), nullable=False)
+    source_id = Column(String(64), nullable=False)
+    title = Column(String(256), nullable=False)
+    explanation = Column(Text, nullable=False)
+    priority = Column(String(16), nullable=False, default="low")
+    due_at = Column(DateTime(timezone=True), nullable=True)
+    evidence_json = Column(Text, nullable=False, default="{}")
+    status = Column(String(16), nullable=False, default="active")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
+class Task(Base):
+    """Owner-scoped actionable task with explicit lifecycle state."""
+    __tablename__ = "tasks"
+    __table_args__ = (
+        CheckConstraint("priority IN ('low', 'medium', 'high')", name="ck_tasks_priority"),
+        CheckConstraint("status IN ('todo', 'in_progress', 'completed', 'cancelled')", name="ck_tasks_status"),
+        Index("ix_tasks_user_status_due", "user_id", "status", "due_at"),
+    )
+
+    id = Column(String(64), primary_key=True, default=generate_uuid)
+    user_id = Column(String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title = Column(String(256), nullable=False)
+    description = Column(Text, nullable=True)
+    priority = Column(String(16), nullable=False, default="medium")
+    status = Column(String(16), nullable=False, default="todo")
+    due_at = Column(DateTime(timezone=True), nullable=True)
+    source_type = Column(String(32), nullable=True)
+    source_id = Column(String(64), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class ActionProposal(Base):
+    """Prepared action requiring explicit approval before its supported effect."""
+    __tablename__ = "action_proposals"
+    __table_args__ = (
+        CheckConstraint("status IN ('proposed', 'executed', 'dismissed')", name="ck_action_proposals_status"),
+        Index("ix_action_proposals_user_status", "user_id", "status"),
+        Index("uq_action_proposals_user_fingerprint", "user_id", "fingerprint", unique=True),
+    )
+
+    id = Column(String(64), primary_key=True, default=generate_uuid)
+    user_id = Column(String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    fingerprint = Column(String(64), nullable=False)
+    action_type = Column(String(48), nullable=False)
+    title = Column(String(256), nullable=False)
+    rationale = Column(Text, nullable=False)
+    payload_json = Column(Text, nullable=False, default="{}")
+    status = Column(String(16), nullable=False, default="proposed")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+    executed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class OrchestrationRun(Base):
+    """Auditable, idempotent record of one owner-scoped orchestration cycle."""
+    __tablename__ = "orchestration_runs"
+    __table_args__ = (
+        Index("uq_orchestration_runs_user_idempotency", "user_id", "idempotency_key", unique=True),
+        Index("ix_orchestration_runs_user_created", "user_id", "created_at"),
+    )
+
+    id = Column(String(64), primary_key=True, default=generate_uuid)
+    user_id = Column(String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    idempotency_key = Column(String(64), nullable=False)
+    trigger = Column(String(24), nullable=False, default="manual")
+    status = Column(String(24), nullable=False, default="completed")
+    summary_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utc_now)

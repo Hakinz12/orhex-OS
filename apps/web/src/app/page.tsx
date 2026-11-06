@@ -15,6 +15,7 @@ import {
 import { EmptyState, PageHeading, SectionHeading, StatusBadge } from "@/components/ui";
 import { fetchMemoryStatus, recallMemories } from "@/lib/api";
 import type { MemoryRecallResponse, MemoryServiceStatus } from "@/lib/types";
+import { AnticipationPanel } from "@/components/lifeos/anticipation-panel";
 
 export default function Home() {
   const [status, setStatus] = useState<MemoryServiceStatus | null>(null);
@@ -85,6 +86,10 @@ export default function Home() {
       </section>
 
       {error && <p role="status" className="rounded-xl border border-[#49393a] bg-[#1d1719] px-4 py-3 text-[12px] text-[#d7aaa6]">{error}</p>}
+
+      <section className="surface-card p-5 sm:p-7">
+        <AnticipationPanel mode="briefing" />
+      </section>
 
       <section className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
         <article className="surface-card p-5 sm:p-6">

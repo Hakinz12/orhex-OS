@@ -287,6 +287,14 @@ def _migrate_conversations(connection) -> None:
         )
 
 
+def _migrate_orchestration_runs(connection) -> None:
+    """Create the additive orchestration audit table and its indexes."""
+    table = Base.metadata.tables["orchestration_runs"]
+    table.create(connection, checkfirst=True)
+    for index in table.indexes:
+        index.create(connection, checkfirst=True)
+
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Dependency for providing a transactional async database session."""
     async with AsyncSessionLocal() as session:
@@ -308,3 +316,9 @@ async def init_db() -> None:
         await conn.run_sync(_migrate_anonymous_visitor_identity)
         await conn.run_sync(_migrate_wallet_verification)
         await conn.run_sync(_migrate_conversations)
+        await conn.run_sync(
+            lambda connection: Base.metadata.tables["anticipation_insights"].create(
+                connection, checkfirst=True
+            )
+        )
+        await conn.run_sync(_migrate_orchestration_runs)

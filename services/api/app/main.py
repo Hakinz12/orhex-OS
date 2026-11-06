@@ -16,6 +16,9 @@ from app.api.v1.memory import router as memory_router
 from app.api.v1.sui import router as sui_router
 from app.api.v1.wallet import router as wallet_router
 from app.api.v1.conversations import router as conversations_router
+from app.api.v1.anticipation import router as anticipation_router
+from app.api.v1.tasks import router as tasks_router
+from app.api.v1.orchestration import router as orchestration_router
 from app.api.v1.memory import ErrorResponse
 from app.services.memory_persistence import recover_pending_operations
 
@@ -62,6 +65,9 @@ async def limit_memory_api_requests(request: Request, call_next):
     if (
         request.url.path.startswith("/api/v1/memory/")
         or request.url.path.startswith("/api/v1/conversations")
+        or request.url.path.startswith("/api/v1/anticipation")
+        or request.url.path.startswith("/api/v1/tasks")
+        or request.url.path.startswith("/api/v1/orchestration")
         or request.url.path == "/api/v1/auth/session"
     ):
         peer = request.client.host if request.client is not None else "unknown"
@@ -141,6 +147,9 @@ app.include_router(memory_router, prefix="/api/v1")
 app.include_router(sui_router, prefix="/api/v1")
 app.include_router(wallet_router, prefix="/api/v1")
 app.include_router(conversations_router, prefix="/api/v1")
+app.include_router(anticipation_router, prefix="/api/v1")
+app.include_router(tasks_router, prefix="/api/v1")
+app.include_router(orchestration_router, prefix="/api/v1")
 
 
 @app.get("/")

@@ -124,6 +124,7 @@ async def test_balances_query_preserves_integer_strings_and_decimal_precision(mo
             200,
             json={
                 "data": {
+                    "chainIdentifier": "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S",
                     "address": {
                         "balances": {
                             "nodes": [
@@ -199,6 +200,7 @@ async def test_owned_objects_query_is_bounded_and_only_returns_cursor_for_next_p
             200,
             json={
                 "data": {
+                    "chainIdentifier": "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S",
                     "address": {
                         "objects": {
                             "nodes": [
@@ -256,6 +258,7 @@ async def test_adapter_rejects_malformed_provider_data_and_invalid_pagination(mo
             200,
             json={
                 "data": {
+                    "chainIdentifier": "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S",
                     "address": {
                         "balances": {
                             "nodes": [
@@ -285,6 +288,49 @@ async def test_adapter_rejects_malformed_provider_data_and_invalid_pagination(mo
         await adapter.get_wallet_balances(ADDRESS, limit=51)
     with pytest.raises(ValueError):
         await adapter.get_owned_objects(ADDRESS, cursor=" padded ")
+
+
+@pytest.mark.asyncio
+async def test_adapter_rejects_unverified_devnet_and_wrong_chain_for_balances(monkeypatch):
+    provider = {"chain": "69WiPg3DAQiwdxfncX6wYQ2siKwAe6L9BZthQea3JNMD"}
+
+    def handle(_request):
+        return httpx.Response(200, json={"data": {
+            "chainIdentifier": provider["chain"],
+            "address": {},
+        }})
+
+    install_transport(monkeypatch, handle)
+    with pytest.raises(TatumSuiError, match="different network") as mismatch:
+        await TatumSuiAdapter(
+            api_key="unit-test-tatum-key", network="mainnet",
+        ).get_wallet_balances(ADDRESS)
+    assert mismatch.value.code == "network_mismatch"
+
+    provider["chain"] = "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S"
+    with pytest.raises(TatumSuiError, match="not verified") as unsupported:
+        await TatumSuiAdapter(
+            api_key="unit-test-tatum-key", network="devnet",
+        ).get_wallet_balances(ADDRESS)
+    assert unsupported.value.code == "unsupported_network"
+
+
+@pytest.mark.asyncio
+async def test_adapter_rejects_malformed_transaction_digest(monkeypatch):
+    install_transport(monkeypatch, lambda _request: httpx.Response(
+        200,
+        json={"data": {
+            "chainIdentifier": "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S",
+            "address": {"transactions": {"nodes": [
+                {"digest": "not-a-sui-digest", "effects": {"status": "success"}},
+            ]}},
+        }},
+    ))
+    with pytest.raises(TatumSuiError) as malformed:
+        await TatumSuiAdapter(api_key="unit-test-tatum-key").get_recent_activity(
+            ADDRESS,
+        )
+    assert malformed.value.code == "invalid_response"
 
 
 @pytest.mark.asyncio
@@ -620,3 +666,66 @@ async def _provider_error():
 
 async def _provider_timeout():
     raise TatumSuiError("timeout", "secret-timeout-detail")
+
+
+@pytest.mark.asyncio
+async def test_wallet_intelligence_rejects_malformed_activity_and_marks_checkpoint_independent(
+    api_harness, monkeypatch
+):
+    headers = await provision_bearer(api_harness)
+    install_api_provider(monkeypatch)
+
+    async def activity(*_args, **_kwargs):
+        return [{"digest": "not-a-sui-digest", "status": "success"}]
+
+    async def checkpoint():
+        return 123
+
+    monkeypatch.setattr(sui_api._sui_adapter, "get_recent_activity", activity)
+    monkeypatch.setattr(sui_api._sui_adapter, "get_latest_checkpoint", checkpoint)
+    invalid = await api_harness.client.get(
+        f"/api/v1/sui/intelligence/{ADDRESS}", headers=headers,
+    )
+    assert invalid.status_code == 502
+    assert invalid.json()["error"] == "invalid_provider_response"
+
+    async def valid_activity(*_args, **_kwargs):
+        return [{
+            "digest": VALID_DIGEST,
+            "timestamp_ms": 1,
+            "status": "success",
+        }]
+
+    monkeypatch.setattr(sui_api._sui_adapter, "get_recent_activity", valid_activity)
+    valid = await api_harness.client.get(
+        f"/api/v1/sui/intelligence/{ADDRESS}", headers=headers,
+    )
+    assert valid.status_code == 200
+    assert valid.json()["checkpoint"] == 123
+    assert valid.json()["snapshot_consistency"] == "independent_provider_reads"
+
+
+@pytest.mark.asyncio
+async def test_wallet_intelligence_normalizes_provider_failure(api_harness, monkeypatch):
+    headers = await provision_bearer(api_harness)
+    install_api_provider(monkeypatch)
+    monkeypatch.setattr(
+        sui_api._sui_adapter,
+        "get_recent_activity",
+        lambda *_args, **_kwargs: _provider_timeout(),
+    )
+    monkeypatch.setattr(
+        sui_api._sui_adapter,
+        "get_latest_checkpoint",
+        lambda: _checkpoint_result(123),
+    )
+    response = await api_harness.client.get(
+        f"/api/v1/sui/intelligence/{ADDRESS}", headers=headers,
+    )
+    assert response.status_code == 503
+    assert response.json()["error"] == "provider_unavailable"
+    assert "secret-timeout-detail" not in response.text
+
+
+async def _checkpoint_result(value):
+    return value

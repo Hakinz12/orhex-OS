@@ -133,6 +133,7 @@ async def test_verified_wallet_returns_native_and_token_balances(context_harness
             visitor_identity_id=visitor.identity.id,
             adapter=adapter,
         )
+        assert not session.in_transaction()
 
     assert result.status == "retrieved"
     assert result.address == ADDRESS

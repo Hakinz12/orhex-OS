@@ -137,12 +137,24 @@ function isAllowedBackendPath(path, method) {
     method === "POST"
   ) return true;
   if (path === MEMORY_STATUS_PATH && method === "GET") return true;
+  if (path === "/api/v1/tasks" && ["GET", "POST"].includes(method)) return true;
+  if (path === "/api/v1/orchestration/run" && method === "POST") return true;
+  if (path === "/api/v1/orchestration/latest" && method === "GET") return true;
+  if (path === "/api/v1/orchestration/runs" && method === "GET") return true;
+  if (/^\/api\/v1\/tasks\/[A-Za-z0-9-]{1,64}$/.test(path) && method === "PATCH") return true;
+  if (path === "/api/v1/tasks/actions" && method === "GET") return true;
+  if (path === "/api/v1/tasks/actions/prepare" && method === "POST") return true;
+  if (/^\/api\/v1\/tasks\/actions\/[A-Za-z0-9-]{1,64}\/approve$/.test(path) && method === "POST") return true;
+  if (path === "/api/v1/anticipation" && method === "GET") return true;
+  if (path === "/api/v1/anticipation/refresh" && method === "POST") return true;
+  if (/^\/api\/v1\/anticipation\/[A-Za-z0-9-]{1,64}$/.test(path) && method === "PATCH") return true;
   if (path === "/api/v1/conversations" && method === "POST") return true;
   if (
     /^\/api\/v1\/conversations\/[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(path) &&
     method === "GET"
   ) return true;
   if (SUI_WALLET_PATH.test(path) && method === "GET") return true;
+  if (/^\/api\/v1\/sui\/intelligence\/0x[0-9a-fA-F]{1,64}$/.test(path) && method === "GET") return true;
   if (path === "/api/v1/memory/remember" && method === "POST") return true;
   if (path === "/api/v1/memory/recall" && method === "POST") return true;
   if (/^\/api\/v1\/memory\/records\/(active|trash)$/.test(path) && method === "GET") return true;
@@ -339,8 +351,9 @@ export function validateRecallBody(value) {
 
 export function validateConversationRequest(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  if (Object.keys(value).some((key) => !["message", "conversation_id", "idempotency_key"].includes(key))) return null;
+  if (Object.keys(value).some((key) => !["message", "conversation_id", "idempotency_key", "include_wallet_context"].includes(key))) return null;
   if (typeof value.message !== "string" || !value.message.trim() || value.message.length > 4000) return null;
+  if (value.include_wallet_context !== undefined && typeof value.include_wallet_context !== "boolean") return null;
   if (typeof value.idempotency_key !== "string" ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.idempotency_key)
   ) return null;
@@ -351,6 +364,7 @@ export function validateConversationRequest(value) {
   return {
     message: value.message.trim(),
     idempotency_key: value.idempotency_key,
+    ...(value.include_wallet_context !== undefined ? { include_wallet_context: value.include_wallet_context } : {}),
     ...(value.conversation_id !== undefined ? { conversation_id: value.conversation_id } : {}),
   };
 }

@@ -111,6 +111,8 @@ def validate_sui_transaction_digest(value: str) -> str:
     """Validate a Sui transaction digest as a base58-encoded 32-byte value."""
     if not isinstance(value, str) or not value:
         raise ValueError("Sui transaction digest cannot be empty.")
+    if len(value) > 44:
+        raise ValueError("Sui transaction digest cannot exceed 44 base58 characters.")
 
     alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
     decoded = 0

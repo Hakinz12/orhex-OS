@@ -4,7 +4,7 @@ from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 from sqlalchemy import desc, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +24,7 @@ from app.api.dependencies import (
 from app.core.database import get_db
 from app.models.domain import Conversation, ConversationMessage
 from app.services.conversation_memory_context import retrieve_conversation_memory_context
+from app.services.wallet_context import retrieve_visitor_wallet_context
 
 router = APIRouter(prefix="/conversations", tags=["Conversations"])
 _gemini = GeminiAdapter()
@@ -40,6 +41,7 @@ class ConversationRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=_MAX_MESSAGE_LENGTH)
     conversation_id: UUID | None = None
     idempotency_key: UUID
+    include_wallet_context: StrictBool = False
 
     @field_validator("message")
     @classmethod
@@ -234,6 +236,15 @@ async def send_message(
         user_id=owner.user_id,
         query=request.message,
     )
+    wallet_context = None
+    if request.include_wallet_context and owner.visitor_identity_id is not None:
+        retrieved_wallet_context = await retrieve_visitor_wallet_context(
+            db,
+            user_id=owner.user_id,
+            visitor_identity_id=owner.visitor_identity_id,
+        )
+        if retrieved_wallet_context.status == "retrieved":
+            wallet_context = retrieved_wallet_context
     prompt_messages = [
         {
             "role": "user" if message.role == "user" else "model",
@@ -249,6 +260,7 @@ async def send_message(
         answer = await _gemini.generate_conversation_response(
             prompt_messages,
             memory_context=memory_context,
+            wallet_context=wallet_context,
         )
     except GeminiUnavailableError as exc:
         raise HTTPException(

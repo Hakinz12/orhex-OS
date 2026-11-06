@@ -86,6 +86,9 @@ async def retrieve_visitor_wallet_context(
 
     wallet_address = association.canonical_address
     wallet_network = association.network.casefold()
+    # End the owner-scoped database read before making external Tatum requests.
+    # Copy the validated scalar fields first so no ORM lazy-load is needed afterward.
+    await session.rollback()
     try:
         tatum = adapter if adapter is not None else TatumSuiAdapter()
         has_api_key = bool(tatum.api_key)

@@ -9,7 +9,11 @@ from pydantic import ValidationError
 
 from app.adapters.tatum.base import BaseBlockchainAdapter
 from app.core.config import settings
-from app.models.schemas import SuiPaginationMetadata, SuiPaginationQuery
+from app.models.schemas import (
+    SuiPaginationMetadata,
+    SuiPaginationQuery,
+    SuiTransactionResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +103,14 @@ class TatumSuiAdapter(BaseBlockchainAdapter):
         self, query: str, variables: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Execute a GraphQL query and reject HTTP, GraphQL, and shape errors."""
+        expected_chain_identifier = _SUI_CHAIN_IDENTIFIERS.get(
+            self.network.casefold()
+        )
+        if expected_chain_identifier is None:
+            raise TatumSuiError(
+                "unsupported_network",
+                "Tatum Sui chain identity is not verified for this network.",
+            )
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
@@ -139,6 +151,17 @@ class TatumSuiAdapter(BaseBlockchainAdapter):
                 "invalid_response",
                 "Tatum Sui response did not contain GraphQL data.",
             )
+        chain_identifier = data.get("chainIdentifier")
+        if not isinstance(chain_identifier, str) or not chain_identifier:
+            raise TatumSuiError(
+                "invalid_response",
+                "Tatum Sui response did not identify a chain.",
+            )
+        if chain_identifier != expected_chain_identifier:
+            raise TatumSuiError(
+                "network_mismatch",
+                "Tatum Sui endpoint is connected to a different network than configured.",
+            )
         return data
 
     async def check_readiness(self) -> Dict[str, Any]:
@@ -167,6 +190,7 @@ class TatumSuiAdapter(BaseBlockchainAdapter):
                         "invalid_json",
                         "invalid_response",
                         "network_mismatch",
+                        "unsupported_network",
                     }
                     else "unreachable"
                 ),
@@ -198,19 +222,6 @@ class TatumSuiAdapter(BaseBlockchainAdapter):
             }
             """
         )
-        if not isinstance(data.get("chainIdentifier"), str) or not data["chainIdentifier"]:
-            raise TatumSuiError(
-                "invalid_response", "Tatum Sui response did not identify a chain."
-            )
-        expected_chain_identifier = _SUI_CHAIN_IDENTIFIERS.get(self.network.casefold())
-        if (
-            expected_chain_identifier is not None
-            and data["chainIdentifier"] != expected_chain_identifier
-        ):
-            raise TatumSuiError(
-                "network_mismatch",
-                "Tatum Sui endpoint is connected to a different network than configured.",
-            )
         checkpoints = data.get("checkpoints")
         nodes = checkpoints.get("nodes") if isinstance(checkpoints, dict) else None
         if not isinstance(nodes, list) or not nodes or not isinstance(nodes[-1], dict):
@@ -235,6 +246,7 @@ class TatumSuiAdapter(BaseBlockchainAdapter):
         data = await self._post_graphql(
             """
             query SuiBalance($address: SuiAddress!) {
+              chainIdentifier
               address(address: $address) {
                 balance(coinType: "0x2::sui::SUI") {
                   totalBalance
@@ -297,6 +309,7 @@ class TatumSuiAdapter(BaseBlockchainAdapter):
               $first: Int!
               $after: String
             ) {
+              chainIdentifier
               address(address: $address) {
                 balances(first: $first, after: $after) {
                   nodes {
@@ -414,6 +427,7 @@ class TatumSuiAdapter(BaseBlockchainAdapter):
               $first: Int!
               $after: String
             ) {
+              chainIdentifier
               address(address: $address) {
                 objects(
                   first: $first
@@ -509,6 +523,7 @@ class TatumSuiAdapter(BaseBlockchainAdapter):
         data = await self._post_graphql(
             """
             query RecentSuiActivity($address: SuiAddress!, $limit: Int!) {
+              chainIdentifier
               address(address: $address) {
                 transactions(
                   last: $limit
@@ -534,6 +549,10 @@ class TatumSuiAdapter(BaseBlockchainAdapter):
             raise TatumSuiError(
                 "invalid_response", "Tatum Sui response did not contain transactions."
             )
+        if len(nodes) > limit:
+            raise TatumSuiError(
+                "invalid_response", "Tatum Sui returned too many transactions."
+            )
 
         activity: List[Dict[str, Any]] = []
         for item in nodes:
@@ -542,30 +561,51 @@ class TatumSuiAdapter(BaseBlockchainAdapter):
                 raise TatumSuiError(
                     "invalid_response", "Tatum Sui returned an invalid transaction."
                 )
+            if effects is not None and not isinstance(effects, dict):
+                raise TatumSuiError(
+                    "invalid_response", "Tatum Sui returned invalid transaction effects."
+                )
             timestamp_ms = None
             status = "unknown"
             if isinstance(effects, dict):
                 timestamp = effects.get("timestamp")
                 if timestamp is not None:
+                    if not isinstance(timestamp, str):
+                        raise TatumSuiError(
+                            "invalid_response",
+                            "Tatum Sui returned an invalid transaction timestamp.",
+                        )
                     try:
+                        transaction_time = datetime.fromisoformat(
+                            timestamp.replace("Z", "+00:00")
+                        )
+                        if transaction_time.utcoffset() is None:
+                            raise ValueError("Timestamp must include a timezone.")
                         timestamp_ms = int(
-                            datetime.fromisoformat(
-                                timestamp.replace("Z", "+00:00")
-                            ).timestamp()
-                            * 1000
+                            transaction_time.timestamp() * 1000
                         )
                     except (AttributeError, TypeError, ValueError) as exc:
                         raise TatumSuiError(
                             "invalid_response",
                             "Tatum Sui returned an invalid transaction timestamp.",
                         ) from exc
-                if isinstance(effects.get("status"), str):
-                    status = effects["status"].lower()
-            activity.append(
-                {
+                effect_status = effects.get("status")
+                if effect_status is not None:
+                    if not isinstance(effect_status, str):
+                        raise TatumSuiError(
+                            "invalid_response",
+                            "Tatum Sui returned an invalid transaction status.",
+                        )
+                    status = effect_status.lower()
+            try:
+                transaction = SuiTransactionResponse.model_validate({
                     "digest": item["digest"],
                     "timestamp_ms": timestamp_ms,
                     "status": status,
-                }
-            )
+                })
+            except ValidationError as exc:
+                raise TatumSuiError(
+                    "invalid_response", "Tatum Sui returned an invalid transaction."
+                ) from exc
+            activity.append(transaction.model_dump())
         return activity

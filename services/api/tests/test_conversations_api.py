@@ -31,14 +31,18 @@ class FakeGemini:
     def __init__(self):
         self.calls = []
         self.memory_contexts = []
+        self.wallet_contexts = []
         self.failure = None
         self.concurrent_barrier = None
         self.concurrent_count = 0
         self.concurrent_lock = asyncio.Lock()
 
-    async def generate_conversation_response(self, messages, memory_context=None):
+    async def generate_conversation_response(
+        self, messages, memory_context=None, wallet_context=None
+    ):
         self.calls.append(messages)
         self.memory_contexts.append(memory_context)
+        self.wallet_contexts.append(wallet_context)
         if self.failure is not None:
             raise self.failure
         if self.concurrent_barrier is not None and messages[-1]["content"].startswith("parallel-"):
@@ -124,6 +128,240 @@ def chat_body(message, *, conversation_id=None, idempotency_key="11111111-1111-4
     if conversation_id is not None:
         body["conversation_id"] = conversation_id
     return body
+
+
+@pytest.mark.asyncio
+async def test_explicit_wallet_context_opt_in_passes_verified_visitor_context_to_gemini(
+    chat_harness,
+    monkeypatch,
+):
+    from app.models.schemas import SuiCoinBalance
+    from app.services.wallet_context import WalletContext
+
+    visitor = await provision_visitor(chat_harness)
+    observed = []
+
+    async def retrieve_wallet_context(db, *, user_id, visitor_identity_id):
+        observed.append((user_id, visitor_identity_id))
+        return WalletContext(
+            status="retrieved",
+            address="0x" + "a" * 64,
+            network="mainnet",
+            native_balance=SuiCoinBalance(
+                coin_type="0x2::sui::SUI",
+                raw_balance="2500000000",
+                amount="2.5",
+                decimals=9,
+                symbol="SUI",
+            ),
+        )
+
+    monkeypatch.setattr(
+        conversations_api,
+        "retrieve_visitor_wallet_context",
+        retrieve_wallet_context,
+    )
+    response = await chat_harness.client.post(
+        "/api/v1/conversations",
+        json={
+            **chat_body("How much SUI do I have?"),
+            "include_wallet_context": True,
+        },
+        headers=bearer(visitor.credential),
+    )
+
+    assert response.status_code == 200
+    assert observed == [(visitor.user.id, visitor.identity.id)]
+    context = chat_harness.gemini.wallet_contexts[0]
+    assert context.status == "retrieved"
+    assert context.address == "0x" + "a" * 64
+    assert context.native_balance.amount == "2.5"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_wallet_context", [None, False])
+async def test_wallet_context_is_off_by_default_and_not_retrieved(
+    chat_harness,
+    monkeypatch,
+    include_wallet_context,
+):
+    visitor = await provision_visitor(chat_harness)
+    calls = []
+
+    async def unexpected_wallet_lookup(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("Wallet context must not be retrieved without opt-in")
+
+    monkeypatch.setattr(
+        conversations_api,
+        "retrieve_visitor_wallet_context",
+        unexpected_wallet_lookup,
+    )
+    body = chat_body(
+        "Hello without wallet context",
+        idempotency_key="51515151-5151-4151-8151-515151515151",
+    )
+    if include_wallet_context is not None:
+        body["include_wallet_context"] = include_wallet_context
+    response = await chat_harness.client.post(
+        "/api/v1/conversations",
+        json=body,
+        headers=bearer(visitor.credential),
+    )
+
+    assert response.status_code == 200
+    assert calls == []
+    assert chat_harness.gemini.wallet_contexts[0] is None
+
+
+@pytest.mark.asyncio
+async def test_opted_in_invalid_wallet_association_is_not_sent_to_gemini(
+    chat_harness,
+    monkeypatch,
+):
+    from datetime import datetime, timezone
+
+    from app.core.config import settings
+    from app.models.domain import WalletAssociation
+
+    monkeypatch.setattr(settings, "SUI_NETWORK", "mainnet")
+    visitor = await provision_visitor(chat_harness)
+    async with chat_harness.factory() as db:
+        db.add(WalletAssociation(
+            visitor_identity_id=visitor.identity.id,
+            user_id=visitor.user.id,
+            chain="sui",
+            network="testnet",
+            canonical_address="0x" + "a" * 64,
+            verified_at=datetime.now(timezone.utc),
+        ))
+        await db.commit()
+
+    response = await chat_harness.client.post(
+        "/api/v1/conversations",
+        json={
+            **chat_body(
+                "Do not use an invalid wallet association",
+                idempotency_key="52525252-5252-4252-8252-525252525252",
+            ),
+            "include_wallet_context": True,
+        },
+        headers=bearer(visitor.credential),
+    )
+
+    assert response.status_code == 200
+    assert chat_harness.gemini.wallet_contexts[0] is None
+    assert "0x" + "a" * 64 not in str(chat_harness.gemini.calls[0])
+
+
+@pytest.mark.asyncio
+async def test_opted_in_unverified_wallet_is_not_sent_to_gemini(chat_harness):
+    visitor = await provision_visitor(chat_harness)
+    response = await chat_harness.client.post(
+        "/api/v1/conversations",
+        json={
+            **chat_body(
+                "No verified wallet is linked",
+                idempotency_key="54545454-5454-4454-8454-545454545454",
+            ),
+            "include_wallet_context": True,
+        },
+        headers=bearer(visitor.credential),
+    )
+
+    assert response.status_code == 200
+    assert chat_harness.gemini.wallet_contexts[0] is None
+
+
+@pytest.mark.asyncio
+async def test_opted_in_wallet_lookup_cannot_cross_visitor_ownership(
+    chat_harness,
+    monkeypatch,
+):
+    from datetime import datetime, timezone
+
+    from app.core.config import settings
+    from app.models.domain import WalletAssociation
+
+    monkeypatch.setattr(settings, "SUI_NETWORK", "mainnet")
+    wallet_owner = await provision_visitor(chat_harness)
+    request_owner = await provision_visitor(chat_harness)
+    async with chat_harness.factory() as db:
+        db.add(WalletAssociation(
+            visitor_identity_id=wallet_owner.identity.id,
+            user_id=wallet_owner.user.id,
+            chain="sui",
+            network="mainnet",
+            canonical_address="0x" + "a" * 64,
+            verified_at=datetime.now(timezone.utc),
+        ))
+        await db.commit()
+
+    response = await chat_harness.client.post(
+        "/api/v1/conversations",
+        json={
+            **chat_body(
+                "Do not use another visitor's wallet",
+                idempotency_key="53535353-5353-4353-8353-535353535353",
+            ),
+            "include_wallet_context": True,
+        },
+        headers=bearer(request_owner.credential),
+    )
+
+    assert response.status_code == 200
+    assert chat_harness.gemini.wallet_contexts[0] is None
+    assert "0x" + "a" * 64 not in str(chat_harness.gemini.calls[0])
+
+
+@pytest.mark.asyncio
+async def test_wallet_context_opt_in_requires_a_boolean(chat_harness):
+    visitor = await provision_visitor(chat_harness)
+    response = await chat_harness.client.post(
+        "/api/v1/conversations",
+        json={
+            **chat_body(
+                "Invalid wallet context consent",
+                idempotency_key="55555555-5555-4555-8555-555555555555",
+            ),
+            "include_wallet_context": "true",
+        },
+        headers=bearer(visitor.credential),
+    )
+
+    assert response.status_code == 422
+    assert chat_harness.gemini.calls == []
+
+
+@pytest.mark.asyncio
+async def test_pat_conversation_never_attempts_to_resolve_visitor_wallet_context(
+    chat_harness,
+    monkeypatch,
+):
+    _, pat_token = await provision_pat(chat_harness)
+    calls = []
+
+    async def unexpected_wallet_lookup(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("PAT conversations must not resolve visitor wallets")
+
+    monkeypatch.setattr(
+        conversations_api,
+        "retrieve_visitor_wallet_context",
+        unexpected_wallet_lookup,
+    )
+    response = await chat_harness.client.post(
+        "/api/v1/conversations",
+        json=chat_body(
+            "PAT conversation without visitor wallet",
+            idempotency_key="44444444-4444-4444-8444-444444444444",
+        ),
+        headers=bearer(pat_token),
+    )
+
+    assert response.status_code == 200
+    assert calls == []
+    assert chat_harness.gemini.wallet_contexts[0] is None
 
 
 @pytest.mark.asyncio

@@ -67,7 +67,7 @@ export function callBackend(
   path: string,
   options?: {
     token?: string;
-    method?: "GET" | "POST" | "DELETE";
+    method?: "GET" | "POST" | "PATCH" | "DELETE";
     body?: Record<string, unknown>;
     query?: { limit?: number; cursor?: string };
     env?: NodeJS.ProcessEnv;
@@ -92,6 +92,7 @@ export function validateConversationRequest(value: unknown): {
   message: string;
   conversation_id?: string | null;
   idempotency_key: string;
+  include_wallet_context?: boolean;
 } | null;
 export function safeConversation(payload: unknown): {
   conversation_id: string;

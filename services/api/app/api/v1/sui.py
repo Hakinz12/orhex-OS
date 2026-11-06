@@ -1,5 +1,6 @@
 """Authenticated read-only Sui wallet data endpoints."""
 import logging
+import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import ValidationError
@@ -9,11 +10,13 @@ from app.api.dependencies import get_current_memory_user
 from app.core.config import settings
 from app.core.rate_limit import SensitiveEndpointRateLimiter
 from app.models.domain import User
+from app.services.blockchain_intelligence import analyze_wallet
 from app.models.schemas import (
     SuiAddress,
     SuiCursor,
     SuiOwnedObjectsResponse,
     SuiPaginationQuery,
+    SuiTransactionResponse,
     SuiWalletBalancesResponse,
     DEFAULT_SUI_PAGE_LIMIT,
     MAX_SUI_PAGE_LIMIT,
@@ -88,6 +91,23 @@ def _validate_provider_response(model, payload):
         ) from exc
 
 
+def _validate_activity_response(payload):
+    try:
+        return [
+            SuiTransactionResponse.model_validate(item).model_dump()
+            for item in payload
+        ]
+    except (ValidationError, TypeError) as exc:
+        logger.warning("Tatum Sui activity failed ORHEX schema validation.")
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "invalid_provider_response",
+                "message": "The Sui data provider returned an invalid response.",
+            },
+        ) from exc
+
+
 def _require_provider_configuration() -> None:
     if not _sui_adapter.api_key:
         raise HTTPException(
@@ -147,3 +167,32 @@ async def get_wallet_objects(
     except TatumSuiError as exc:
         _raise_provider_error(exc)
     return _validate_provider_response(SuiOwnedObjectsResponse, result)
+
+
+@router.get(
+    "/intelligence/{address}",
+    responses={401: {}, 422: {}, 502: {}, 503: {}},
+)
+async def get_wallet_intelligence(
+    request: Request,
+    address: SuiAddress,
+    _user: User = Depends(get_current_memory_user),
+):
+    """Return an explainable, bounded intelligence snapshot for a public Sui wallet."""
+    await _enforce_rate_limit(request)
+    _require_provider_configuration()
+    try:
+        balances, activity, checkpoint = await asyncio.gather(
+            _sui_adapter.get_wallet_balances(address, limit=MAX_SUI_PAGE_LIMIT),
+            _sui_adapter.get_recent_activity(address, limit=20),
+            _sui_adapter.get_latest_checkpoint(),
+        )
+    except TatumSuiError as exc:
+        _raise_provider_error(exc)
+    validated = _validate_provider_response(SuiWalletBalancesResponse, balances)
+    validated_activity = _validate_activity_response(activity)
+    return analyze_wallet(
+        address=address, network=validated.network,
+        balances=[item.model_dump() for item in validated.balances],
+        activity=validated_activity, checkpoint=checkpoint,
+    )

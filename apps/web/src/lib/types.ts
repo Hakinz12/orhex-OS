@@ -159,3 +159,60 @@ export interface SuiActivity {
   last_checkpoint?: number;
   fetched_at: string;
 }
+
+export interface AnticipationInsight {
+  id: string;
+  kind: string;
+  source_type: string;
+  source_id: string;
+  title: string;
+  explanation: string;
+  priority: "low" | "medium" | "high";
+  due_at: string | null;
+  evidence: Record<string, unknown>;
+  status: "active" | "dismissed" | "resolved";
+  created_at: string;
+  updated_at: string;
+}
+
+
+export interface OrhexTask { id:string; title:string; description:string|null; priority:"low"|"medium"|"high"; status:"todo"|"in_progress"|"completed"|"cancelled"; due_at:string|null; source_type:string|null; source_id:string|null; created_at:string; updated_at:string; completed_at:string|null; }
+export interface ActionProposal { id:string; action_type:string; title:string; rationale:string; payload:Record<string,unknown>; status:"proposed"|"executed"|"dismissed"; created_at:string; updated_at:string; executed_at:string|null; }
+
+export interface OrchestrationRecommendation {
+  kind: string;
+  priority: "low" | "medium" | "high";
+  title: string;
+  reason: string;
+  source_type: string;
+  source_id: string;
+  requires_approval: boolean;
+}
+
+export interface OrchestrationRun {
+  id: string;
+  trigger: string;
+  status: string;
+  created_at: string;
+  summary: {
+    decision: "approval_required" | "attention_needed" | "next_steps_ready" | "all_clear";
+    headline: string;
+    counts: {
+      active_goals: number;
+      open_tasks: number;
+      overdue_tasks: number;
+      tasks_due_within_24h: number;
+      open_commitments: number;
+      active_insights: number;
+      pending_approvals: number;
+    };
+    recommendations: OrchestrationRecommendation[];
+    safety: {
+      external_actions_executed: number;
+      wallet_transactions_signed: number;
+      messages_sent: number;
+      approval_required_for_proposals: boolean;
+    };
+    generated_at: string;
+  };
+}

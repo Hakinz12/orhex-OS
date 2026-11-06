@@ -57,7 +57,8 @@ contextual grounding but does not save or modify memories.
 {
   "message": "A message of at most 4,000 characters",
   "conversation_id": null,
-  "idempotency_key": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+  "idempotency_key": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  "include_wallet_context": false
 }
 ```
 
@@ -66,6 +67,11 @@ messages include the returned identifier. The idempotency key is reused for a
 retry of the same request. Client-provided owner IDs and namespaces are not
 accepted. The API supports either the existing visitor credential or PAT
 authenticator; visitor and PAT conversations have separate ownership scopes.
+`include_wallet_context` is an optional strict boolean that defaults to `false`.
+When `true`, only a visitor's existing server-verified, owner-scoped Sui wallet
+association may be used to retrieve bounded read-only context for that Gemini
+request. The browser cannot provide wallet identity or balances as trusted
+context; missing or invalid associations do not supply wallet data to Gemini.
 
 #### Response `200 OK`
 ```json
@@ -383,3 +389,37 @@ public HTTPS application origin. The BFF does not derive trust from arbitrary
 `X-Forwarded-Host` or `X-Forwarded-Proto` values; the deployment proxy must
 route the configured public origin to the Next.js app without relying on those
 headers for the application's CSRF decision.
+
+
+## Anticipation API (implemented)
+
+- `GET /api/v1/anticipation` returns the authenticated user's active anticipation insights.
+- `POST /api/v1/anticipation/refresh` evaluates deterministic goal/commitment deadline rules and returns active insights.
+- `PATCH /api/v1/anticipation/{insight_id}` accepts `{"status":"active"|"dismissed"}` for an insight owned by the authenticated user.
+- `GET /api/v1/anticipation?include_inactive=true` also includes dismissed and resolved records.
+- The Next.js BFF exposes matching routes under `/api/bff/anticipation`.
+- Insight evidence identifies its owner-scoped source record and deterministic rule. The engine does not perform actions or write new memories to Walrus.
+- The home-page daily briefing is request-driven; there is no scheduled background evaluator or push notification delivery in this increment.
+
+
+## Task & Action Engine
+
+- `GET /api/v1/tasks` lists the authenticated owner's tasks; optional `status` filters the lifecycle state.
+- `POST /api/v1/tasks` captures a task.
+- `PATCH /api/v1/tasks/{task_id}` updates only that owner's task.
+- `GET /api/v1/tasks/actions` lists prepared action proposals.
+- `POST /api/v1/tasks/actions/prepare` derives deduplicated task-creation proposals from active anticipation insights.
+- `POST /api/v1/tasks/actions/{action_id}/approve` accepts `approved` or `dismissed`. Approval currently creates a task in the same database transaction.
+
+All endpoints accept the supported authenticated owner credential (PAT or visitor session). Action proposals are not executed during preparation. The only executable proposal type in this milestone is `create_task`; external integrations and background scheduling are not implemented.
+
+
+## Autonomous Orchestration v1
+- `POST /api/v1/orchestration/run` — authenticated, idempotent owner-scoped decision cycle; requires UUID idempotency key.
+- `GET /api/v1/orchestration/latest` — most recent decision cycle for the authenticated owner.
+- `GET /api/v1/orchestration/runs?limit=20` — recent decision-cycle history.
+- Proposals remain approval-gated; this API does not execute external side effects.
+
+## Advanced Blockchain Intelligence (v1)
+
+- `GET /api/v1/sui/intelligence/{address}` — authenticated, read-only Sui wallet snapshot combining token balances with known decimals, up to 20 recent sent transaction outcomes, and an independently fetched latest checkpoint. Each provider response is checked against the configured mainnet or testnet chain identifier; devnet is rejected until its identity can be verified. Token quantities are not summed or ranked across token types, and no portfolio concentration or USD valuation is implied.

@@ -17,6 +17,8 @@ from app.services.conversation_memory_context import (
 from app.adapters.walrus.memwal import MemWalAdapter
 from app.adapters.tatum.sui_rpc import TatumSuiAdapter
 from app.core.config import settings
+from app.models.schemas import SuiCoinBalance
+from app.services.wallet_context import WalletContext
 
 
 @pytest.mark.asyncio
@@ -156,6 +158,27 @@ async def test_gemini_conversation_adapter_sends_turns_and_parses_validated_answ
                 created_at="2024-01-02T03:04:05Z",
             ),
         ],
+    ), wallet_context=WalletContext(
+        status="retrieved",
+        address="0x" + "a" * 64,
+        network="mainnet",
+        native_balance=SuiCoinBalance(
+            coin_type="0x2::sui::SUI",
+            raw_balance="1250000000",
+            amount="1.25",
+            decimals=9,
+            symbol="SUI",
+        ),
+        token_balances=[
+            SuiCoinBalance(
+                coin_type=f"0x{index:x}::token::COIN",
+                raw_balance="2500",
+                amount="25",
+                decimals=2,
+                symbol="T" * 40,
+            )
+            for index in range(21)
+        ],
     ))
 
     assert answer == "A real provider answer."
@@ -170,6 +193,16 @@ async def test_gemini_conversation_adapter_sends_turns_and_parses_validated_answ
     assert "I prefer concise explanations." in memory_part
     assert "I prefer detailed explanations." in memory_part
     assert "private-memory-id" not in memory_part
+    wallet_part = payload["contents"][-1]["parts"][2]["text"]
+    assert "read-only snapshot" in wallet_part
+    assert "1.25" in wallet_part
+    assert "0x" + "a" * 64 in wallet_part
+    assert "signing permission" in wallet_part
+    wallet_json = json.loads(wallet_part.split("\n", 1)[1])
+    assert len(wallet_json["token_balances"]) == 20
+    assert wallet_json["has_more_token_balances"] is True
+    assert len(wallet_json["token_balances"][0]["symbol"]) == 32
+    assert "read-only snapshot" in payload["systemInstruction"]["parts"][0]["text"]
     assert "untrusted evidence" in payload["systemInstruction"]["parts"][0]["text"]
     assert "materially conflict" in payload["systemInstruction"]["parts"][0]["text"]
 
@@ -357,6 +390,7 @@ async def test_tatum_sui_balance_and_recent_activity_use_graphql(monkeypatch):
         query = request.content.decode()
         if "SuiBalance" in query:
             data = {
+                "chainIdentifier": "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S",
                 "address": {
                     "balance": {
                         "totalBalance": "1500000000",
@@ -365,11 +399,12 @@ async def test_tatum_sui_balance_and_recent_activity_use_graphql(monkeypatch):
             }
         else:
             data = {
+                "chainIdentifier": "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S",
                 "address": {
                     "transactions": {
                         "nodes": [
                             {
-                                "digest": "public-transaction",
+                                "digest": "11111111111111111111111111111111",
                                 "effects": {
                                     "timestamp": "2026-01-02T03:04:05Z",
                                     "status": "SUCCESS",
@@ -400,7 +435,7 @@ async def test_tatum_sui_balance_and_recent_activity_use_graphql(monkeypatch):
     }
     assert activity == [
         {
-            "digest": "public-transaction",
+            "digest": "11111111111111111111111111111111",
             "timestamp_ms": 1767323045000,
             "status": "success",
         }

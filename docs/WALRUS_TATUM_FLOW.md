@@ -119,3 +119,23 @@ ORHEX OS provides contextual on-chain intelligence through **Tatum's Sui GraphQL
 - **Balance and Activity:** GraphQL queries retrieve the SUI balance and recent sent-transaction summaries for the requested public address.
 - **Interface Migration:** Sui Foundation disabled JSON-RPC on its Mainnet full nodes in July 2026. ORHEX uses Tatum's current GraphQL interface rather than the legacy JSON-RPC methods.
 - **Explainable Interpretation:** Raw on-chain data is paired with user preferences to create clear explanations (e.g., notifying the user of contract activity relevant to an active goal).
+
+### Verified Wallet Context in Conversations
+
+The conversation endpoint (`POST /api/v1/conversations`) can assemble a
+request-scoped Sui wallet snapshot for Gemini only when the authenticated
+visitor explicitly opts in with `include_wallet_context: true`; consent defaults
+to false, and without opt-in no wallet lookup is performed. The lookup uses
+both the authenticated application `user_id` and the exact
+`visitor_identity_id`; the active wallet association must be verified,
+non-revoked, canonical, and on the configured Sui network. Tatum is queried
+server-side for the native SUI balance and a bounded page of token balances.
+
+Only a successfully validated snapshot is added to Gemini's current-turn
+context. It is explicitly labelled as untrusted, point-in-time, read-only
+on-chain data. Token metadata and on-chain text are never treated as
+instructions, and wallet context does not authorize signing or transfers.
+Provider failures and missing/revoked associations do not create wallet
+context. PAT conversations have no visitor identity and never resolve a
+visitor wallet. Wallet snapshots are not written to conversation history or
+long-term Walrus memory; they are fetched again for each new message.

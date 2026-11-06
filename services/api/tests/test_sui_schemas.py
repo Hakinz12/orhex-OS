@@ -49,7 +49,7 @@ def test_sui_transaction_digest_requires_base58_encoded_32_bytes():
 
 @pytest.mark.parametrize(
     "digest",
-    ["", "1" * 31, "1" * 33, "0" * 32, "O" * 32, "public-transaction"],
+    ["", "1" * 31, "1" * 33, "1" * 45, "0" * 32, "O" * 32, "public-transaction"],
 )
 def test_sui_transaction_digest_rejects_invalid_values(digest):
     with pytest.raises(ValueError):
