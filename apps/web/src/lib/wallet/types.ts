@@ -29,6 +29,7 @@ export interface WalletConnectionAdapter {
 
   connect(options?: { silent?: boolean }): Promise<void>;
   disconnect(): Promise<void>;
+  signPersonalMessage(message: Uint8Array): Promise<string>;
   getActiveAccount(): WalletAccountRecord | null;
   getViewModel(): WalletConnectionViewModel;
   onAccountChange(listener: (account: WalletAccountRecord | null) => void): () => void;

@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import re
+import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
@@ -10,8 +11,6 @@ from memwal import (
     RecallParams,
     MemWalError,
     MemWalRateLimited,
-    MemWalRememberJobFailed,
-    MemWalRememberJobTimeout,
 )
 from app.adapters.walrus.base import BaseWalrusMemory
 from app.core.config import settings
@@ -25,6 +24,10 @@ _managed_clients: List[MemWal] = []
 
 class WalrusAdapterError(RuntimeError):
     """A Walrus operation failed and cannot be represented as a successful result."""
+
+
+class WalrusAdapterTimeoutError(WalrusAdapterError):
+    """A bounded Walrus request exceeded its response deadline."""
 
 
 def _configuration_error(
@@ -221,7 +224,7 @@ class MemWalAdapter(BaseWalrusMemory):
         metadata: Optional[Dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Write and wait for SDK confirmation.
+        """Return promptly after SDK acceptance; reconciliation confirms persistence.
 
         MemWal 0.2.1 stores text and namespace; category, memory_type, and
         metadata remain interface-level values and are not sent to the SDK.
@@ -260,36 +263,44 @@ class MemWalAdapter(BaseWalrusMemory):
                 "definite_failure": True,
             }
 
+        started = time.perf_counter()
         try:
-            result = await client.remember_and_wait(
-                text=text,
-                namespace=namespace,
-                poll_interval_ms=1500,
-                timeout_ms=90_000,
-                idempotency_key=idempotency_key,
+            accepted = await asyncio.wait_for(
+                client.remember(
+                    text=text,
+                    namespace=namespace,
+                    idempotency_key=idempotency_key,
+                ),
+                timeout=15.0,
             )
-            if not result.blob_id:
+            job_id = getattr(accepted, "job_id", None)
+            if not isinstance(job_id, str) or not job_id:
+                logger.error("Walrus accepted a memory write without a job ID.")
                 return {
-                    "status": "failed",
-                    "error": "Walrus SDK returned without a confirmed blob ID.",
+                    "status": "reconciliation_required",
+                    "error": "Walrus accepted the write without a usable job ID.",
+                    "error_type": "InvalidAcceptedResponse",
                 }
-            logger.info("Walrus write confirmed: namespace=%s", result.namespace)
+            logger.info(
+                "Walrus accepted a memory write in %.1f ms.",
+                (time.perf_counter() - started) * 1000,
+            )
             return {
-                "status": "confirmed",
-                "blob_id": result.blob_id,
-                "memory_id": result.id,
-                "namespace": result.namespace,
-                "owner": result.owner,
+                "status": "pending",
+                "job_id": job_id,
+                "namespace": namespace,
                 "category": category,
                 "memory_type": memory_type,
             }
-        except MemWalRememberJobTimeout as exc:
-            logger.warning("Walrus write confirmation timed out.")
+        except TimeoutError as exc:
+            logger.warning(
+                "Walrus write acceptance timed out after %.1f ms.",
+                (time.perf_counter() - started) * 1000,
+            )
             return {
                 "status": "timeout",
-                "error": "Walrus storage confirmation timed out.",
+                "error": "Walrus write acceptance timed out; reconcile before retrying.",
                 "error_type": type(exc).__name__,
-                "job_id": exc.job_id,
             }
         except MemWalRateLimited as exc:
             logger.warning("Walrus memory write was rate limited.")
@@ -297,15 +308,6 @@ class MemWalAdapter(BaseWalrusMemory):
                 "status": "rate_limited",
                 "error": "Walrus relayer rate limit reached.",
                 "error_type": type(exc).__name__,
-                "definite_failure": True,
-            }
-        except MemWalRememberJobFailed as exc:
-            logger.error("Walrus storage job failed: %s", type(exc).__name__)
-            return {
-                "status": "failed",
-                "error": "Walrus storage job failed.",
-                "error_type": type(exc).__name__,
-                "job_id": exc.job_id,
                 "definite_failure": True,
             }
         except MemWalError as exc:
@@ -335,9 +337,17 @@ class MemWalAdapter(BaseWalrusMemory):
             client = await self._get_client()
             if client is None:
                 raise WalrusAdapterError("Walrus SDK client could not be initialized.")
-            status = await client.get_remember_status(job_id)
+            status = await asyncio.wait_for(
+                client.get_remember_status(job_id),
+                timeout=7.0,
+            )
         except WalrusAdapterError:
             raise
+        except TimeoutError as exc:
+            logger.warning("Walrus remember-job status lookup timed out.")
+            raise WalrusAdapterTimeoutError(
+                "Memory write status could not be confirmed before the request timed out."
+            ) from exc
         except MemWalError as exc:
             logger.error("Walrus SDK status lookup failed: %s", type(exc).__name__)
             raise WalrusAdapterError("Walrus remember-job status lookup failed.") from exc
@@ -373,15 +383,29 @@ class MemWalAdapter(BaseWalrusMemory):
             client = await self._get_client()
             if client is None:
                 raise WalrusAdapterError("Walrus SDK client could not be initialized.")
-            result = await client.recall(
-                RecallParams(
-                    query=query,
-                    limit=min(limit, 20),
-                    namespace=namespace,
-                )
+            started = time.perf_counter()
+            result = await asyncio.wait_for(
+                client.recall(
+                    RecallParams(
+                        query=query,
+                        limit=min(limit, 20),
+                        namespace=namespace,
+                    )
+                ),
+                timeout=7.0,
+            )
+            logger.info(
+                "Walrus recall completed in %.1f ms with %s result(s).",
+                (time.perf_counter() - started) * 1000,
+                len(result.results),
             )
         except WalrusAdapterError:
             raise
+        except TimeoutError as exc:
+            logger.warning("Walrus recall timed out.")
+            raise WalrusAdapterTimeoutError(
+                "Memory search timed out. Please retry."
+            ) from exc
         except MemWalRateLimited as exc:
             logger.warning("Walrus memory recall was rate limited.")
             raise WalrusAdapterError("Walrus memory recall was rate limited.") from exc
@@ -411,7 +435,7 @@ class MemWalAdapter(BaseWalrusMemory):
             "status": "unsupported",
             "message": (
                 "memwal 0.2.1 does not expose blob-status lookup. "
-                "A successful remember call confirms storage."
+                "A completed remember-job status confirms storage."
             ),
         }
 

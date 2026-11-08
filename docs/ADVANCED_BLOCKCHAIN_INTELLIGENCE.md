@@ -8,13 +8,16 @@ This release adds an authenticated, read-only Sui wallet intelligence snapshot u
 
 `GET /api/v1/sui/intelligence/{address}`
 
-The endpoint requires the existing ORHEX bearer session and uses the existing Sui rate limiter. It performs three independently verified provider reads concurrently and returns:
+The endpoint requires the existing ORHEX bearer session and uses the existing Sui rate limiter. It performs three independently verified provider reads concurrently. Successful reads are retained if another read fails; the response reports `data_status` (`complete`, `partial`, or `unavailable`), `unavailable_sections`, and safe provider error codes. Unavailable component values are `null`; a successful empty result remains an empty collection. It returns:
 
 - network, wallet address, fetch time, and latest checkpoint;
 - token holdings only where Tatum returned decimal metadata;
 - recent sent transaction outcomes (success/failure/unknown);
 - deterministic heuristic signals for failed recent transactions;
 - explicit limitations.
+
+Provider authentication and transport failures are never represented as zero balances,
+empty activity, or empty holdings.
 
 The checkpoint is an independent provider read, not a consistency guarantee for
 the balances and activity returned alongside it. Each provider response is

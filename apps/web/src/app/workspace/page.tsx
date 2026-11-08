@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import Link from "next/link";
 import { ArrowRightIcon, MemoryIcon, MessageIcon, SearchIcon, ShieldIcon, SparkIcon } from "@/components/icons";
+import { handleChatComposerKeyDown } from "@/lib/chat-composer.mjs";
 import { PageHeading } from "@/components/ui";
 import {
   ApiError,
@@ -33,11 +34,14 @@ export default function WorkspacePage() {
   const [rememberError, setRememberError] = useState<string | null>(null);
   const [operation, setOperation] = useState<MemoryOperation | null>(null);
   const [operationCheckBusy, setOperationCheckBusy] = useState(false);
+  const rememberInFlight = useRef(false);
+  const operationCheckInFlight = useRef(false);
   const rememberAttempt = useRef<{ text: string; idempotencyKey: string } | null>(null);
   const [question, setQuestion] = useState("");
   const [recallBusy, setRecallBusy] = useState(false);
   const [recallError, setRecallError] = useState<string | null>(null);
   const [recall, setRecall] = useState<MemoryRecallResponse | null>(null);
+  const recallInFlight = useRef(false);
   const [conversation, setConversation] = useState<ConversationResponse | null>(null);
   const [conversationLoading, setConversationLoading] = useState(true);
   const [conversationBusy, setConversationBusy] = useState(false);
@@ -45,6 +49,7 @@ export default function WorkspacePage() {
   const [chatDraft, setChatDraft] = useState("");
   const [includeWalletContext, setIncludeWalletContext] = useState(false);
   const conversationRequestId = useRef(0);
+  const conversationInFlight = useRef(false);
   const pendingChatRequest = useRef<{
     message: string;
     idempotency_key: string;
@@ -152,6 +157,8 @@ export default function WorkspacePage() {
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (rememberInFlight.current) return;
+    rememberInFlight.current = true;
     setRememberBusy(true);
     setRememberError(null);
     setOperation(null);
@@ -174,12 +181,14 @@ export default function WorkspacePage() {
             : "The memory could not be saved.",
       );
     } finally {
+      rememberInFlight.current = false;
       setRememberBusy(false);
     }
   }
 
   async function checkOperation() {
-    if (!operation) return;
+    if (!operation || operationCheckInFlight.current) return;
+    operationCheckInFlight.current = true;
     setOperationCheckBusy(true);
     setRememberError(null);
     try {
@@ -187,12 +196,62 @@ export default function WorkspacePage() {
     } catch (reason) {
       setRememberError(reason instanceof ApiError ? reason.message : "The operation status is unavailable.");
     } finally {
+      operationCheckInFlight.current = false;
       setOperationCheckBusy(false);
     }
   }
 
+  const pendingOperationId = operation?.operation_id;
+  const pendingOperationStatus = operation?.status;
+
+  useEffect(() => {
+    if (!pendingOperationId || pendingOperationStatus !== "pending") return;
+    const operationId = pendingOperationId;
+    let cancelled = false;
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout>;
+
+    async function reconcilePendingOperation() {
+      if (cancelled || attempts >= 8) return;
+      attempts += 1;
+      if (operationCheckInFlight.current) {
+        timer = setTimeout(() => void reconcilePendingOperation(), 1500);
+        return;
+      }
+      operationCheckInFlight.current = true;
+      setOperationCheckBusy(true);
+      try {
+        const updated = await reconcileMemoryOperation(operationId);
+        if (cancelled) return;
+        setOperation(updated);
+        if (updated.status === "pending" && attempts < 8) {
+          timer = setTimeout(() => void reconcilePendingOperation(), 1500);
+        }
+      } catch (reason) {
+        if (!cancelled) {
+          setRememberError(
+            reason instanceof ApiError
+              ? reason.message
+              : "Memory confirmation is still pending. Check its status before retrying.",
+          );
+        }
+      } finally {
+        operationCheckInFlight.current = false;
+        if (!cancelled) setOperationCheckBusy(false);
+      }
+    }
+
+    timer = setTimeout(() => void reconcilePendingOperation(), 1000);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [pendingOperationId, pendingOperationStatus]);
+
   async function ask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (recallInFlight.current) return;
+    recallInFlight.current = true;
     setRecallBusy(true);
     setRecallError(null);
     setRecall(null);
@@ -201,11 +260,13 @@ export default function WorkspacePage() {
     } catch (reason) {
       setRecallError(reason instanceof ApiError ? reason.message : "Context recall is unavailable.");
     } finally {
+      recallInFlight.current = false;
       setRecallBusy(false);
     }
   }
 
   async function sendChatMessage() {
+    if (conversationInFlight.current) return;
     const message = chatDraft.trim();
     if (!pendingChatRequest.current) {
       if (!message) return;
@@ -216,6 +277,7 @@ export default function WorkspacePage() {
         ...(conversation ? { conversation_id: conversation.conversation_id } : {}),
       };
     }
+    conversationInFlight.current = true;
     setConversationBusy(true);
     setConversationError(null);
     try {
@@ -236,6 +298,7 @@ export default function WorkspacePage() {
           : "The assistant could not complete your message. Retry safely.",
       );
     } finally {
+      conversationInFlight.current = false;
       setConversationBusy(false);
     }
   }
@@ -410,7 +473,11 @@ export default function WorkspacePage() {
             maxLength={4000}
             value={chatDraft}
             onChange={(event) => setChatDraft(event.target.value)}
+            onKeyDown={(event) => {
+              handleChatComposerKeyDown(event, () => void sendChatMessage());
+            }}
             placeholder="Write a message to ORHEX…"
+            aria-describedby="workspace-chat-keyboard-help"
             disabled={
               conversationLoading ||
               conversationBusy ||
@@ -419,7 +486,7 @@ export default function WorkspacePage() {
             }
           />
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-[10px] text-[#778697]">Up to 4,000 characters · conversation context is bounded</p>
+            <p id="workspace-chat-keyboard-help" className="text-[10px] text-[#778697]">Enter sends · Shift+Enter adds a line · up to 4,000 characters</p>
             <button
               type="submit"
               className="primary-button"

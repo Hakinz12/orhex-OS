@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { AppShell } from "@/components/app-shell";
 import { SessionProvider } from "@/components/session-provider";
+import { WalletConnectionProvider } from "@/lib/wallet/state";
 import "../styles/globals.css";
 
 export const metadata: Metadata = {
@@ -26,9 +27,11 @@ export default function RootLayout({
         >
           Skip to content
         </a>
-        <SessionProvider>
-          <AppShell>{children}</AppShell>
-        </SessionProvider>
+        <AppShell>
+          <SessionProvider>
+            <WalletConnectionProvider>{children}</WalletConnectionProvider>
+          </SessionProvider>
+        </AppShell>
       </body>
     </html>
   );

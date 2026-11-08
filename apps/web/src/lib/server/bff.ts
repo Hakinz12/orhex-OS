@@ -158,6 +158,34 @@ export async function proxyConversationRequest(
     );
   }
   if (!result.response.ok) {
+    let backendError: unknown = null;
+    try {
+      backendError = await result.response.json();
+    } catch {
+      backendError = null;
+    }
+    const detail =
+      backendError && typeof backendError === "object" && "detail" in backendError
+        ? (backendError as { detail?: unknown }).detail
+        : null;
+    const backendCode =
+      detail && typeof detail === "object" && "code" in detail
+        ? (detail as { code?: unknown }).code
+        : null;
+    const providerErrors: Record<string, { error: string; message: string }> = {
+      assistant_provider_auth: {
+        error: "assistant_provider_auth",
+        message: "The AI provider rejected its server credentials. Ask an administrator to check the AI configuration.",
+      },
+      assistant_model_unavailable: {
+        error: "assistant_model_unavailable",
+        message: "The configured AI model is unavailable. Ask an administrator to check the model configuration.",
+      },
+      assistant_provider_rate_limited: {
+        error: "assistant_provider_rate_limited",
+        message: "The AI provider is rate limited. Wait briefly, then retry your message.",
+      },
+    };
     const errors: Record<number, { error: string; message: string }> = {
       404: { error: "not_found", message: "The conversation was not found." },
       409: { error: "conversation_conflict", message: "The conversation changed. Reload it and retry." },
@@ -167,7 +195,10 @@ export async function proxyConversationRequest(
       503: { error: "assistant_unavailable", message: "The assistant is temporarily unavailable." },
       504: { error: "assistant_timeout", message: "The assistant did not respond in time. Please retry." },
     };
-    const mapped = errors[result.response.status] ?? errors[503];
+    const mapped =
+      (typeof backendCode === "string" ? providerErrors[backendCode] : undefined) ??
+      errors[result.response.status] ??
+      errors[503];
     return NextResponse.json(mapped, {
       status: result.response.status in errors ? result.response.status : 503,
       headers: { "Cache-Control": "no-store" },
@@ -183,6 +214,117 @@ export async function proxyConversationRequest(
   const safePayload = safeConversation(payload);
   if (!safePayload) {
     return jsonError(502, "invalid_backend_response", "The assistant service returned an invalid response.");
+  }
+  return NextResponse.json(safePayload, {
+    status: result.response.status,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
+
+export async function proxyWalletVerification(
+  token: string,
+  path: string,
+  method: "GET" | "POST",
+  responseKind: "status" | "challenge" | "verification",
+  body?: Record<string, unknown>,
+  origin?: string,
+) {
+  const result = await callBackend(path, { token, method, body, origin });
+  if (result.kind === "unavailable") {
+    return jsonError(503, "wallet_service_unavailable", "Wallet verification is temporarily unavailable.");
+  }
+  if (result.kind === "rejected") {
+    return jsonError(400, "invalid_request", "The wallet verification request is invalid.");
+  }
+  if (result.response.status === 401) {
+    return clearSessionCookie(
+      jsonError(401, "unauthenticated", "Your visitor session is invalid or expired."),
+      token,
+    );
+  }
+  if (!result.response.ok) {
+    const errors: Record<number, { error: string; message: string }> = {
+      403: { error: "wallet_origin_rejected", message: "Wallet verification must be requested by this ORHEX application." },
+      409: { error: "wallet_verification_failed", message: "The challenge expired or could not be verified. Request a new challenge." },
+      422: { error: "invalid_request", message: "The wallet verification request is invalid." },
+      429: { error: "rate_limited", message: "Too many wallet verification requests. Please retry shortly." },
+      503: { error: "wallet_service_unavailable", message: "The wallet verification service is temporarily unavailable." },
+    };
+    const mapped = errors[result.response.status] ?? errors[503];
+    return NextResponse.json(mapped, {
+      status: result.response.status in errors ? result.response.status : 503,
+      headers: {
+        "Cache-Control": "no-store",
+        ...(result.response.status === 429
+          ? { "Retry-After": result.response.headers.get("retry-after") || "60" }
+          : {}),
+      },
+    });
+  }
+
+  let payload: unknown;
+  try {
+    payload = await result.response.json();
+  } catch {
+    return jsonError(502, "invalid_backend_response", "The wallet verification service returned an invalid response.");
+  }
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  if (!isRecord(payload)) {
+    return jsonError(502, "invalid_backend_response", "The wallet verification service returned an invalid response.");
+  }
+
+  let safePayload: Record<string, unknown> | null = null;
+  if (responseKind === "status" || responseKind === "verification") {
+    if (responseKind === "status" && payload.verified === false) {
+      safePayload = { verified: false };
+    } else if (
+      payload.verified === true ||
+      (responseKind === "verification" &&
+        payload.status === "verified" &&
+        payload.chain === "sui")
+    ) {
+      if (
+        payload.chain !== "sui" ||
+        typeof payload.network !== "string" ||
+        !["mainnet", "testnet", "devnet"].includes(payload.network) ||
+        typeof payload.address !== "string" ||
+        !validateSuiWalletAddress(payload.address)
+      ) {
+        return jsonError(502, "invalid_backend_response", "The wallet verification service returned an invalid response.");
+      }
+      safePayload = {
+        verified: true,
+        chain: "sui",
+        network: payload.network,
+        address: payload.address,
+      };
+    }
+  } else if (
+    typeof payload.challenge_id === "string" &&
+    payload.purpose === "wallet_link" &&
+    payload.chain === "sui" &&
+    typeof payload.network === "string" &&
+    ["mainnet", "testnet", "devnet"].includes(payload.network) &&
+    typeof payload.address === "string" &&
+    validateSuiWalletAddress(payload.address) &&
+    typeof payload.message === "string" &&
+    /^[A-Za-z0-9+/]+={0,2}$/.test(payload.message) &&
+    typeof payload.expires_at === "string"
+  ) {
+    safePayload = {
+      challenge_id: payload.challenge_id,
+      purpose: "wallet_link",
+      chain: "sui",
+      network: payload.network,
+      address: payload.address,
+      message: payload.message,
+      expires_at: payload.expires_at,
+    };
+  }
+
+  if (!safePayload) {
+    return jsonError(502, "invalid_backend_response", "The wallet verification service returned an invalid response.");
   }
   return NextResponse.json(safePayload, {
     status: result.response.status,

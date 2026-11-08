@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { after, before } from "node:test";
 import { pathToFileURL } from "node:url";
+import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import {
   SUI_MAINNET_CHAIN,
@@ -13,12 +14,18 @@ import {
 } from "@mysten/wallet-standard";
 
 const walletSource = path.resolve("src/lib/wallet/sui.ts");
+const walletStateSourcePath = path.resolve("src/lib/wallet/state.tsx");
+const rootLayoutSourcePath = path.resolve("src/app/layout.tsx");
 let tempDirectory;
 let createSuiWalletAdapter;
+let walletStateSource;
+let rootLayoutSource;
 
 before(async () => {
   tempDirectory = await mkdtemp(path.join(process.cwd(), ".wallet-test-"));
   const source = await readFile(walletSource, "utf8");
+  walletStateSource = await readFile(walletStateSourcePath, "utf8");
+  rootLayoutSource = await readFile(rootLayoutSourcePath, "utf8");
   const result = ts.transpileModule(source, {
     compilerOptions: {
       module: ts.ModuleKind.ES2022,
@@ -256,6 +263,8 @@ test("cleans up event listeners and supports repeated start and dispose", () => 
   stopSecond();
   assert.equal(registry.listenerCount, 0);
   assert.equal(wallet.eventListenerCount, 0);
+  assert.equal(adapter.status, "disconnected");
+  assert.equal(adapter.address, null);
   assert.equal(registry.unsubscriptions, 2);
   assert.equal(wallet.eventUnsubscriptions, 1);
 
@@ -265,6 +274,34 @@ test("cleans up event listeners and supports repeated start and dispose", () => 
   assert.equal(registry.listenerCount, 2);
   assert.equal(wallet.eventListenerCount, 1);
   stopAgain();
+  assert.equal(adapter.status, "disconnected");
+  assert.equal(adapter.address, null);
+});
+
+test("formatAddress shortens addresses with an explicit Unicode ellipsis", () => {
+  const functionSource = walletStateSource.match(/export function formatAddress[\s\S]*?\n}/)?.[0];
+  assert.ok(functionSource, "formatAddress should be present in wallet state");
+  const compiled = ts.transpileModule(functionSource.replace(/^export /, ""), {
+    compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const formatAddress = runInNewContext(`${compiled}\nformatAddress`);
+
+  assert.equal(formatAddress("0x1234567890abcdef", 4), "0x12\u2026cdef");
+});
+
+test("wallet provider is rooted under session context and verification is address-bound", () => {
+  assert.match(
+    rootLayoutSource,
+    /<SessionProvider>\s*<WalletConnectionProvider>\{children\}<\/WalletConnectionProvider>\s*<\/SessionProvider>/,
+  );
+  assert.match(
+    walletStateSource,
+    /wallet\.status === "connected" &&[\s\S]*?verification\?\.verified === true[\s\S]*?verification\.network === wallet\.network[\s\S]*?canonicalWalletAddress\(verification\.address\) ===\s*canonicalWalletAddress\(wallet\.address\)/,
+  );
+  assert.match(
+    walletStateSource,
+    /adapter\.onAccountChange\(\(\) => \{[\s\S]*?setVerification\(null\);/,
+  );
 });
 
 test("ignores wallets that do not support Sui", async () => {

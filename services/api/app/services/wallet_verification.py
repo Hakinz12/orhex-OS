@@ -10,6 +10,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from asyncio.subprocess import PIPE
 
@@ -167,20 +168,87 @@ def _message_timestamp(value: datetime) -> str:
     return _normalized_datetime(value).isoformat().replace("+00:00", "Z")
 
 
-def _message_payload(*, purpose: str, network: str, address: str, nonce: str, visitor_identity_id: str, user_id: str, created_at: datetime) -> dict[str, Any]:
+def normalize_wallet_origin(value: str | None) -> str:
+    """Return an exact configured application origin or reject the request."""
+    if not isinstance(value, str) or not value:
+        raise InvalidWalletChallengeError("A valid application origin is required.")
+
+    def canonical_origin(candidate: str) -> str | None:
+        try:
+            parsed = urlsplit(candidate)
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+                or parsed.path not in {"", "/"}
+                or parsed.query
+                or parsed.fragment
+            ):
+                return None
+            hostname = parsed.hostname.casefold()
+            if ":" in hostname:
+                hostname = f"[{hostname}]"
+            port = parsed.port
+            if port and not (
+                (parsed.scheme == "https" and port == 443)
+                or (parsed.scheme == "http" and port == 80)
+            ):
+                hostname = f"{hostname}:{port}"
+            return f"{parsed.scheme.casefold()}://{hostname}"
+        except ValueError:
+            return None
+
+    origin = canonical_origin(value)
+    configured_origins = {
+        configured
+        for item in settings.cors_origins_list
+        if (configured := canonical_origin(item)) is not None
+    }
+    if origin is None or origin not in configured_origins:
+        raise InvalidWalletChallengeError("The application origin is not allowed.")
+    return origin
+
+
+def _message_payload(
+    *,
+    purpose: str,
+    network: str,
+    address: str,
+    nonce: str,
+    visitor_identity_id: str,
+    user_id: str,
+    created_at: datetime,
+    expires_at: datetime,
+    origin: str,
+) -> dict[str, Any]:
     return {
         "address": address,
         "chain": _WALLET_CHAIN,
         "created_at": _message_timestamp(created_at),
+        "domain": urlsplit(origin).netloc,
+        "expires_at": _message_timestamp(expires_at),
         "network": network,
         "nonce": nonce,
+        "origin": origin,
         "purpose": purpose,
         "user_id": user_id,
         "visitor_identity_id": visitor_identity_id,
     }
 
 
-def build_wallet_verification_message(*, purpose: str, network: str, address: str, nonce: str, visitor_identity_id: str, user_id: str, created_at: datetime) -> bytes:
+def build_wallet_verification_message(
+    *,
+    purpose: str,
+    network: str,
+    address: str,
+    nonce: str,
+    visitor_identity_id: str,
+    user_id: str,
+    created_at: datetime,
+    expires_at: datetime,
+    origin: str,
+) -> bytes:
     payload = _message_payload(
         purpose=purpose,
         network=network,
@@ -189,6 +257,8 @@ def build_wallet_verification_message(*, purpose: str, network: str, address: st
         visitor_identity_id=visitor_identity_id,
         user_id=user_id,
         created_at=created_at,
+        expires_at=expires_at,
+        origin=origin,
     )
     return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
 
@@ -201,14 +271,20 @@ async def create_wallet_verification_challenge(
     purpose: str,
     network: str,
     address: str,
+    origin: str,
     ttl_seconds: int = 300,
 ) -> tuple[WalletVerificationChallenge, bytes]:
     if purpose not in SUPPORTED_VERIFICATION_PURPOSES:
         raise InvalidWalletChallengeError("Wallet verification purpose is not supported.")
     if network not in SUPPORTED_SUI_NETWORKS:
         raise InvalidWalletChallengeError("Sui network is not supported.")
+    origin = normalize_wallet_origin(origin)
+    configured_network = settings.SUI_NETWORK.strip().casefold()
+    if network != configured_network:
+        raise InvalidWalletChallengeError("Sui network does not match the configured network.")
     normalized_address = normalize_sui_address(address)
     created_at = _utc_now()
+    expires_at = created_at + timedelta(seconds=ttl_seconds)
     nonce = _new_nonce()
     message = build_wallet_verification_message(
         purpose=purpose,
@@ -218,6 +294,8 @@ async def create_wallet_verification_challenge(
         visitor_identity_id=visitor_identity_id,
         user_id=user_id,
         created_at=created_at,
+        expires_at=expires_at,
+        origin=origin,
     )
     challenge = WalletVerificationChallenge(
         id=generate_uuid(),
@@ -231,7 +309,7 @@ async def create_wallet_verification_challenge(
         nonce_hash=hashlib.sha256(nonce.encode("ascii")).hexdigest(),
         message_digest=hashlib.sha256(message).hexdigest(),
         created_at=created_at,
-        expires_at=created_at + timedelta(seconds=ttl_seconds),
+        expires_at=expires_at,
     )
     session.add(challenge)
     try:
@@ -341,7 +419,11 @@ async def verify_personal_message_signature(message: bytes, signature: str, addr
     return verified_address.lower() == address.lower()
 
 
-def _challenge_message(challenge: WalletVerificationChallenge) -> bytes:
+def _challenge_message(
+    challenge: WalletVerificationChallenge,
+    *,
+    origin: str,
+) -> bytes:
     return build_wallet_verification_message(
         purpose=challenge.purpose,
         network=challenge.network,
@@ -350,6 +432,8 @@ def _challenge_message(challenge: WalletVerificationChallenge) -> bytes:
         visitor_identity_id=challenge.visitor_identity_id,
         user_id=challenge.user_id,
         created_at=_normalized_datetime(challenge.created_at),
+        expires_at=_normalized_datetime(challenge.expires_at),
+        origin=normalize_wallet_origin(origin),
     )
 
 
@@ -360,6 +444,7 @@ async def consume_wallet_challenge(
     visitor_identity_id: str,
     user_id: str,
     signature: str,
+    origin: str,
 ) -> WalletAssociation:
     now = _utc_now()
     challenge = await fetch_wallet_verification_challenge(
@@ -378,7 +463,7 @@ async def consume_wallet_challenge(
     if challenge.expires_at <= now:
         raise InvalidWalletChallengeError("Wallet verification challenge has expired.")
 
-    message = _challenge_message(challenge)
+    message = _challenge_message(challenge, origin=origin)
     try:
         nonce_digest = hashlib.sha256(challenge.nonce.encode("ascii")).hexdigest()
     except UnicodeEncodeError as exc:

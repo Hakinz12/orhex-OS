@@ -10,7 +10,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.adapters.walrus.memwal import MemWalAdapter, WalrusAdapterError
+from app.adapters.walrus.memwal import (
+    MemWalAdapter,
+    WalrusAdapterError,
+    WalrusAdapterTimeoutError,
+)
 from app.api.dependencies import get_current_memory_user
 from app.core.database import get_db
 from app.models.domain import MemorySyncRecord, User
@@ -246,7 +250,12 @@ async def remember_memory(
 @router.post(
     "/recall",
     response_model=RecallResponse,
-    responses={401: {"model": ErrorResponse}, 502: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+    responses={
+        401: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+        504: {"model": ErrorResponse},
+    },
 )
 async def recall_memories(
     req: RecallRequest,
@@ -267,6 +276,8 @@ async def recall_memories(
     except MemoryPersistenceError as exc:
         logger.error("Memory owner validation failed: %s", type(exc).__name__)
         return _error(503, "database_error", str(exc))
+    except WalrusAdapterTimeoutError as exc:
+        return _error(504, "walrus_recall_timeout", str(exc))
     except WalrusAdapterError as exc:
         return _error(502, "walrus_recall_failed", str(exc))
 

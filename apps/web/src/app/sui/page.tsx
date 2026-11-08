@@ -11,7 +11,7 @@ import {
   ShieldCheck,
   Wallet2,
 } from "lucide-react";
-import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { PageHeading, SectionHeading } from "@/components/ui";
 import { useWalletConnection } from "@/lib/wallet/state";
@@ -79,6 +79,9 @@ function InlineError({ message, onRetry }: { message: string; onRetry: () => voi
 
 export default function SuiPage() {
   const wallet = useWalletConnection();
+  const [walletAction, setWalletAction] = useState<"connecting" | "disconnecting" | null>(null);
+  const [walletActionError, setWalletActionError] = useState<string | null>(null);
+  const walletActionInFlight = useRef(false);
   const controller = useMemo(() => new SuiWalletDataController(), []);
   const state = useSyncExternalStore(
     controller.subscribe,
@@ -97,6 +100,21 @@ export default function SuiPage() {
         }
       : disconnectedData();
   const nativeBalance = getNativeSuiBalance(visibleState.balances);
+
+  async function runWalletAction(action: "connecting" | "disconnecting", operation: () => Promise<void>) {
+    if (walletActionInFlight.current) return;
+    walletActionInFlight.current = true;
+    setWalletAction(action);
+    setWalletActionError(null);
+    try {
+      await operation();
+    } catch (reason) {
+      setWalletActionError(reason instanceof Error ? reason.message : "The wallet action could not be completed.");
+    } finally {
+      walletActionInFlight.current = false;
+      setWalletAction(null);
+    }
+  }
 
   useEffect(() => {
     controller.setAddress(connected ? wallet.address : null);
@@ -153,22 +171,22 @@ export default function SuiPage() {
           </div>
 
           {connected ? (
-            <button type="button" className="secondary-button self-start lg:self-auto" onClick={() => void wallet.disconnect()}>
-              Disconnect from ORHEX
+            <button type="button" className="secondary-button self-start lg:self-auto" onClick={() => void runWalletAction("disconnecting", wallet.disconnect)} disabled={walletAction !== null}>
+              {walletAction === "disconnecting" ? "Disconnecting…" : "Disconnect from ORHEX"}
             </button>
           ) : (
             <button
               type="button"
               className="primary-button self-start lg:self-auto"
-              onClick={() => void wallet.connect()}
-              disabled={wallet.status === "connecting"}
+              onClick={() => void runWalletAction("connecting", wallet.connect)}
+              disabled={wallet.status === "connecting" || walletAction !== null}
             >
-              {wallet.status === "connecting" ? (
+              {wallet.status === "connecting" || walletAction === "connecting" ? (
                 <LoaderCircle className="h-4 w-4 animate-spin" />
               ) : (
                 <Wallet2 className="h-4 w-4" />
               )}
-              {wallet.status === "connecting" ? "Connecting…" : "Connect Wallet"}
+              {wallet.status === "connecting" || walletAction === "connecting" ? "Connecting…" : "Connect Wallet"}
             </button>
           )}
         </div>
@@ -195,9 +213,9 @@ export default function SuiPage() {
           </div>
         </div>
 
-        {wallet.error && (
+        {(walletActionError || wallet.error) && (
           <div role="alert" className="border-t border-[#503437] bg-[#21181b] px-5 py-3 text-[12px] text-[#e0aaa7] sm:px-7">
-            {wallet.error}
+            {walletActionError || wallet.error}
           </div>
         )}
       </section>
@@ -227,7 +245,12 @@ export default function SuiPage() {
               {visibleState.balanceStatus === "loading" ? (
                 <div className="skeleton mt-8 h-9 w-48" />
               ) : visibleState.balanceStatus === "error" && !nativeBalance ? (
-                <p className="mt-6 text-[12px] text-[#dca9a6]">Native balance is unavailable.</p>
+                <div className="mt-6">
+                  <InlineError
+                    message={visibleState.balanceError ?? "Native SUI balance is unavailable."}
+                    onRetry={() => void controller.refresh()}
+                  />
+                </div>
               ) : nativeBalance ? (
                 <p className="relative mt-6 break-all font-display text-[32px] font-semibold tracking-[-0.04em] text-[#f0f3f6] sm:text-[38px]">
                   {formatCoinBalance(nativeBalance)}

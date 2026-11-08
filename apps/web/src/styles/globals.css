@@ -56,6 +56,36 @@ a {
   -webkit-tap-highlight-color: transparent;
 }
 
+a:not([aria-disabled="true"]) {
+  transition: transform 100ms ease;
+}
+
+a:not([aria-disabled="true"]):active {
+  transform: scale(0.99);
+}
+
+button {
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease,
+    opacity 140ms ease,
+    transform 100ms ease;
+}
+
+button:not(:disabled):hover {
+  filter: brightness(1.08);
+}
+
+button:not(:disabled):active {
+  transform: scale(0.98);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
@@ -107,7 +137,7 @@ textarea:focus-visible {
   transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
 }
 
-.icon-button:hover {
+.icon-button:hover:not(:disabled) {
   border-color: var(--border);
   background: var(--surface-hover);
   color: var(--foreground);
@@ -153,9 +183,15 @@ textarea:focus-visible {
   transition: border-color 160ms ease, background-color 160ms ease;
 }
 
-.secondary-button:hover {
+.secondary-button:hover:not(:disabled) {
   border-color: #3a4a5a;
   background: var(--surface-hover);
+}
+
+.primary-button:active:not(:disabled),
+.secondary-button:active:not(:disabled),
+.icon-button:active:not(:disabled) {
+  transform: scale(0.98);
 }
 
 .muted-link {

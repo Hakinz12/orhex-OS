@@ -70,6 +70,7 @@ export function callBackend(
     method?: "GET" | "POST" | "PATCH" | "DELETE";
     body?: Record<string, unknown>;
     query?: { limit?: number; cursor?: string };
+    origin?: string;
     env?: NodeJS.ProcessEnv;
     fetchImpl?: typeof fetch;
   },

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   ArrowRightIcon,
   ArrowUpRightIcon,
@@ -15,7 +16,12 @@ import {
 import { EmptyState, PageHeading, SectionHeading, StatusBadge } from "@/components/ui";
 import { fetchMemoryStatus, recallMemories } from "@/lib/api";
 import type { MemoryRecallResponse, MemoryServiceStatus } from "@/lib/types";
-import { AnticipationPanel } from "@/components/lifeos/anticipation-panel";
+import { WalletConnectionPanel } from "@/components/wallet-connection";
+
+const AnticipationPanel = dynamic(
+  () => import("@/components/lifeos/anticipation-panel").then((module) => module.AnticipationPanel),
+  { loading: () => <div className="surface-card h-36 animate-pulse" aria-label="Loading anticipation insights" /> },
+);
 
 export default function Home() {
   const [status, setStatus] = useState<MemoryServiceStatus | null>(null);
@@ -50,9 +56,12 @@ export default function Home() {
         title="A clearer view of your world."
         description="ORHEX brings your context together, so the important things stay connected and the next step feels easier to see."
         action={
-          <button type="button" className="secondary-button text-[11px]" onClick={() => void refresh()} disabled={loading}>
-            {loading ? "Refreshing…" : "Refresh"}
-          </button>
+          <div className="flex w-full flex-wrap items-center justify-start gap-2 sm:w-auto sm:justify-end">
+            <WalletConnectionPanel />
+            <button type="button" className="secondary-button text-[11px]" onClick={() => void refresh()} disabled={loading}>
+              {loading ? "Refreshing…" : "Refresh"}
+            </button>
+          </div>
         }
       />
 

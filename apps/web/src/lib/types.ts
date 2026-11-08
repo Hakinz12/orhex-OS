@@ -100,6 +100,23 @@ export interface VisitorSessionStatus {
 
 export type SessionStatus = PatSessionStatus | VisitorSessionStatus;
 
+export interface VerifiedWalletStatus {
+  verified: boolean;
+  chain?: "sui";
+  network?: string;
+  address?: string;
+}
+
+export interface WalletVerificationChallenge {
+  challenge_id: string;
+  purpose: "wallet_link";
+  chain: "sui";
+  network: string;
+  address: string;
+  message: string;
+  expires_at: string;
+}
+
 export interface MemoryServiceStatus {
   status: string;
   write_ready?: boolean;

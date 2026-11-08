@@ -1,12 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRightIcon, ShieldIcon } from "@/components/icons";
 import { useSession } from "@/components/session-provider";
 import { PageHeading } from "@/components/ui";
 import { ApiError } from "@/lib/api";
-import { WalletConnectionPanel } from "@/components/wallet-connection";
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -19,25 +18,41 @@ export default function SettingsPage() {
     signOutPat,
   } = useSession();
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const actionInFlight = useRef(false);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  async function runSessionAction(action: () => Promise<void>, destination?: string) {
-    setBusy(true);
+  async function runSessionAction(
+    actionName: string,
+    action: () => Promise<void>,
+    successMessage: string,
+    destination?: string,
+  ) {
+    if (actionInFlight.current) return;
+    actionInFlight.current = true;
+    setBusyAction(actionName);
     setError(null);
+    setSuccess(null);
     try {
       await action();
       if (destination) {
         router.replace(destination);
         router.refresh();
+      } else {
+        setSuccess(successMessage);
       }
     } catch (reason) {
-      setError(reason instanceof ApiError ? reason.message : "The session update could not be completed.");
+      if (reason instanceof ApiError && reason.status === 401) {
+        await refresh();
+      }
+      setError(
+        reason instanceof ApiError || reason instanceof Error
+          ? reason.message
+          : "The session update could not be completed.",
+      );
     } finally {
-      setBusy(false);
+      actionInFlight.current = false;
+      setBusyAction(null);
     }
   }
 
@@ -47,7 +62,11 @@ export default function SettingsPage() {
         "Start a new isolated visitor identity? Existing memories remain with the old identity and are not deleted.",
       )
     ) {
-      void runSessionAction(resetVisitor);
+      void runSessionAction(
+        "reset",
+        resetVisitor,
+        "A new isolated visitor identity is active. The previous identity and its data were not deleted.",
+      );
     }
   }
 
@@ -89,29 +108,29 @@ export default function SettingsPage() {
               {session.status === "unauthenticated" && <p className="text-[11px] text-[#8493a3]">No session is currently active.</p>}
               {session.status === "error" && <p role="alert" className="text-[11px] text-[#d9a7a3]">{session.message}</p>}
               {error && <p role="alert" className="text-[11px] text-[#d9a7a3]">{error}</p>}
+              {success && <p role="status" className="mt-2 text-[11px] text-[#a8c8b3]">{success}</p>}
             </div>
             {session.status === "visitor" && (
               <div className="mt-4 flex flex-wrap gap-2">
-                <button type="button" className="secondary-button" onClick={() => void runSessionAction(rotateVisitor)} disabled={busy}>
-                  {busy ? "Updating…" : "Rotate credential"}
+                <button type="button" className="secondary-button" onClick={() => void runSessionAction("rotate", rotateVisitor, "Your visitor credential was rotated.")} disabled={busyAction !== null}>
+                  {busyAction === "rotate" ? "Rotating…" : "Rotate credential"}
                 </button>
-                <button type="button" className="secondary-button" onClick={confirmReset} disabled={busy}>
-                  Reset visitor identity
+                <button type="button" className="secondary-button" onClick={confirmReset} disabled={busyAction !== null}>
+                  {busyAction === "reset" ? "Resetting…" : "Reset visitor identity"}
                 </button>
-                <button type="button" className="secondary-button" onClick={() => void runSessionAction(endVisitor, "/signin")} disabled={busy}>
-                  End visitor session
+                <button type="button" className="secondary-button" onClick={() => void runSessionAction("end", endVisitor, "", "/signin")} disabled={busyAction !== null}>
+                  {busyAction === "end" ? "Ending session…" : "End visitor session"}
                 </button>
               </div>
             )}
             {session.status === "pat" && (
-              <button type="button" className="secondary-button mt-4" onClick={() => void runSessionAction(signOutPat, "/signin")} disabled={busy}>
-                {busy ? "Signing out…" : "Sign out"}
+              <button type="button" className="secondary-button mt-4" onClick={() => void runSessionAction("signout", signOutPat, "", "/signin")} disabled={busyAction !== null}>
+                {busyAction === "signout" ? "Signing out…" : "Sign out"}
               </button>
             )}
           </div>
         </div>
       </section>
-      <WalletConnectionPanel />
       <section className="surface-card divide-y divide-[#202a34]">
         <div className="px-5 py-5 sm:px-7">
           <h2 className="text-[13px] font-semibold text-[#e2e8ee]">Connected services</h2>

@@ -171,8 +171,8 @@ export class SuiWalletDataController {
   private generation = 0;
   private fetchImpl: typeof fetch;
 
-  constructor(fetchImpl: typeof fetch = fetch) {
-    this.fetchImpl = fetchImpl;
+  constructor(fetchImpl?: typeof fetch) {
+    this.fetchImpl = (fetchImpl ?? globalThis.fetch).bind(globalThis);
   }
 
   readonly getSnapshot = (): SuiWalletData => this.state;
@@ -260,7 +260,10 @@ export class SuiWalletDataController {
         method: "GET",
         cache: "no-store",
         headers: { Accept: "application/json" },
-        signal: controller.signal,
+        signal: AbortSignal.any([
+          controller.signal,
+          AbortSignal.timeout(15_000),
+        ]),
       });
       let payload: unknown;
       try {
@@ -302,7 +305,7 @@ export class SuiWalletDataController {
 }
 
 export function getNativeSuiBalance(balances: readonly SuiCoinBalance[]): SuiCoinBalance | null {
-  return balances.find((balance) => balance.coin_type === SUI_COIN_TYPE) ?? null;
+  return balances.find((balance) => /^0x0*2::sui::SUI$/i.test(balance.coin_type)) ?? null;
 }
 
 export function getCoinDisplayName(balance: SuiCoinBalance): string {

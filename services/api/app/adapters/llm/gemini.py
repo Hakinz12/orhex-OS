@@ -42,6 +42,18 @@ class GeminiTimeoutError(GeminiConversationError):
     """Gemini did not respond within the conversation timeout."""
 
 
+class GeminiAuthenticationError(GeminiConversationError):
+    """Gemini rejected the server-side API credential."""
+
+
+class GeminiModelUnavailableError(GeminiConversationError):
+    """The configured Gemini model is unavailable."""
+
+
+class GeminiRateLimitError(GeminiConversationError):
+    """Gemini rate limited the conversation request."""
+
+
 class GeminiProviderError(GeminiConversationError):
     """Gemini rejected the request or could not serve it."""
 
@@ -286,7 +298,21 @@ class GeminiAdapter(BaseLLMAdapter):
         except httpx.HTTPError as exc:
             raise GeminiProviderError("Gemini conversation request failed.") from exc
 
+        if response.status_code in {401, 403}:
+            raise GeminiAuthenticationError(
+                "Gemini rejected the configured server-side credentials."
+            )
+        if response.status_code == 404:
+            raise GeminiModelUnavailableError(
+                "The configured Gemini model is unavailable."
+            )
+        if response.status_code == 429:
+            raise GeminiRateLimitError("Gemini rate limited the conversation request.")
         if response.status_code != 200:
+            logger.warning(
+                "Gemini conversation request failed with HTTP status %d",
+                response.status_code,
+            )
             raise GeminiProviderError("Gemini could not complete the conversation request.")
         try:
             data = response.json()

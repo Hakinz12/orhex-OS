@@ -126,6 +126,11 @@ class TatumSuiAdapter(BaseBlockchainAdapter):
             ) from exc
 
         if not response.is_success:
+            if response.status_code in {401, 403}:
+                raise TatumSuiError(
+                    "authentication_error",
+                    "Tatum Sui authentication was rejected.",
+                )
             raise TatumSuiError(
                 f"http_{response.status_code}",
                 f"Tatum Sui endpoint returned HTTP {response.status_code}.",
@@ -191,6 +196,7 @@ class TatumSuiAdapter(BaseBlockchainAdapter):
                         "invalid_response",
                         "network_mismatch",
                         "unsupported_network",
+                        "authentication_error",
                     }
                     else "unreachable"
                 ),

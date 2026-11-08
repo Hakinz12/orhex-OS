@@ -2,6 +2,7 @@
 import hashlib
 import json
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -39,6 +40,14 @@ class MemoryWriteUncertainError(MemoryPersistenceError):
 
 class MemoryStateConflictError(MemoryPersistenceError):
     """The requested memory lifecycle transition is not allowed."""
+
+
+def _normalize_datetime(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def namespace_for_user(user_id: str, base_namespace: Optional[str] = None) -> str:
@@ -149,6 +158,7 @@ async def persist_memory(
         attempted_at=utc_now(),
     )
     session.add(record)
+    local_commit_started = time.perf_counter()
     try:
         await session.commit()
     except SQLAlchemyError as exc:
@@ -157,7 +167,12 @@ async def persist_memory(
             "Could not durably record the memory operation; Walrus was not called.",
             operation_id,
         ) from exc
+    logger.info(
+        "Memory pending record committed in %.1f ms.",
+        (time.perf_counter() - local_commit_started) * 1000,
+    )
 
+    walrus_started = time.perf_counter()
     try:
         result = await walrus.remember(
             namespace=namespace,
@@ -166,6 +181,10 @@ async def persist_memory(
             memory_type=memory_type,
             metadata=metadata,
             idempotency_key=record.idempotency_key,
+        )
+        logger.info(
+            "Memory provider submission returned in %.1f ms.",
+            (time.perf_counter() - walrus_started) * 1000,
         )
     except Exception as exc:
         record.status = "reconciliation_required"
@@ -192,6 +211,12 @@ async def persist_memory(
         record.walrus_blob_id = result["blob_id"]
         record.walrus_memory_id = result.get("memory_id")
         record.confirmed_at = utc_now()
+    elif (
+        result_status == "pending"
+        and isinstance(record.walrus_job_id, str)
+        and record.walrus_job_id
+    ):
+        record.status = "pending"
     elif result_status in _DEFINITE_FAILURE_STATUSES or (
         result_status == "failed"
         and (
@@ -204,12 +229,14 @@ async def persist_memory(
         record.status = "reconciliation_required"
         if result_status == "confirmed":
             record.last_error = "Walrus confirmation did not match the owned operation."
+        elif result_status == "pending":
+            record.last_error = "Walrus accepted the write without a usable job ID."
 
     await _commit_state(
         session,
         record,
         "Could not save the Walrus write result locally.",
-        outcome_uncertain=record.status == "confirmed",
+        outcome_uncertain=record.status in {"confirmed", "pending", "reconciliation_required"},
     )
     return record
 
@@ -222,6 +249,7 @@ async def _commit_state(
     outcome_uncertain: bool = False,
 ) -> None:
     record_id = record.id
+    started = time.perf_counter()
     try:
         await session.commit()
     except SQLAlchemyError as exc:
@@ -237,6 +265,10 @@ async def _commit_state(
                 record_id,
             ) from exc
         raise MemoryPersistenceError(message, record_id) from exc
+    logger.info(
+        "Memory operation state committed in %.1f ms.",
+        (time.perf_counter() - started) * 1000,
+    )
 
 
 async def recover_pending_operations(
@@ -247,19 +279,21 @@ async def recover_pending_operations(
     """Move stale pending writes to reconciliation without resubmitting them."""
     cutoff = datetime.now(timezone.utc) - older_than
     try:
-        result = await session.execute(
-            select(MemorySyncRecord).where(
-                MemorySyncRecord.status == "pending",
-                MemorySyncRecord.updated_at <= cutoff,
-            )
+        pending = await session.execute(
+            select(MemorySyncRecord).where(MemorySyncRecord.status == "pending")
         )
-        records = list(result.scalars())
-        for record in records:
+        stale_records = [
+            record
+            for record in pending.scalars().all()
+            if _normalize_datetime(record.updated_at) is not None
+            and _normalize_datetime(record.updated_at) <= cutoff
+        ]
+        for record in stale_records:
             record.status = "reconciliation_required"
             record.last_error = "Process ended before the Walrus outcome was recorded."
             record.updated_at = utc_now()
         await session.commit()
-        return len(records)
+        return len(stale_records)
     except SQLAlchemyError as exc:
         await session.rollback()
         raise MemoryPersistenceError(
@@ -558,12 +592,17 @@ async def recall_for_user(
     limit: int = 5,
 ) -> List[Dict[str, Any]]:
     """Recall only from the namespace derived for the application user."""
+    validation_started = time.perf_counter()
     try:
         user = await session.get(User, user_id)
         if user is None:
             await session.rollback()
             raise MemoryOwnerNotFoundError("Application user does not exist.")
         await session.commit()
+        logger.info(
+            "Memory recall owner validation completed in %.1f ms.",
+            (time.perf_counter() - validation_started) * 1000,
+        )
     except MemoryOwnerNotFoundError:
         raise
     except SQLAlchemyError as exc:
@@ -571,11 +610,17 @@ async def recall_for_user(
         raise MemoryPersistenceError(
             "Could not validate the owner before recalling memories."
         ) from exc
+    walrus_started = time.perf_counter()
     hits = await walrus.recall(
         namespace=namespace_for_user(user_id),
         query=query,
         limit=limit,
     )
+    logger.info(
+        "Memory recall provider stage completed in %.1f ms.",
+        (time.perf_counter() - walrus_started) * 1000,
+    )
+    filter_started = time.perf_counter()
     try:
         trashed_result = await session.execute(
             select(MemorySyncRecord.walrus_blob_id).where(
@@ -591,6 +636,10 @@ async def recall_for_user(
         )
         trashed_blob_ids = set(trashed_result.scalars())
         await session.commit()
+        logger.info(
+            "Memory recall local filtering completed in %.1f ms.",
+            (time.perf_counter() - filter_started) * 1000,
+        )
     except SQLAlchemyError as exc:
         await session.rollback()
         raise MemoryPersistenceError(

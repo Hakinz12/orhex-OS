@@ -200,6 +200,33 @@ test("backend downtime and insecure production configuration fail closed", async
     },
   });
 
+  test("server-side default fetch sends authenticated BFF requests without an injected client", async () => {
+    let observedAuthorization = null;
+    const server = createServer((request, response) => {
+      observedAuthorization = request.headers.authorization;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ status: "ready" }));
+    });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    try {
+      const port = server.address().port;
+      const result = await callBackend("/api/v1/memory/status", {
+        token: validToken,
+        env: { ...backendEnv, ORHEX_API_BASE_URL: `http://127.0.0.1:${port}` },
+      });
+      assert.equal(result.kind, "response");
+      assert.equal(observedAuthorization, ["Bearer", validToken].join(" "));
+      assert.equal(result.response.headers.get("content-type"), "application/json");
+    } finally {
+      await new Promise((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
   test("conversation BFF validates requests, forwards the session credential, and sanitizes responses", async () => {
     const conversationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const idempotencyKey = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -467,7 +494,7 @@ test("orchestration BFF allowlist forwards only authenticated decision-cycle end
   assert.equal(requests[0].init.headers.get("authorization"), `Bearer ${validToken}`);
 });
 
-test("Sui BFF allowlist forwards only the two approved reads with the session bearer", async () => {
+test("Sui BFF allowlist forwards only approved read endpoints with the session bearer", async () => {
   const address = `0x${"a".repeat(64)}`;
   const requests = [];
   const fetchImpl = async (url, init) => {
@@ -476,6 +503,7 @@ test("Sui BFF allowlist forwards only the two approved reads with the session be
   };
   const balancePath = `/api/v1/sui/wallet/${address}/balances`;
   const objectsPath = `/api/v1/sui/wallet/${address}/objects`;
+  const intelligencePath = `/api/v1/sui/intelligence/${address}`;
 
   const balances = await callBackend(balancePath, {
     token: validToken,
@@ -491,17 +519,26 @@ test("Sui BFF allowlist forwards only the two approved reads with the session be
     env: backendEnv,
     fetchImpl,
   });
+  const intelligence = await callBackend(intelligencePath, {
+    token: validToken,
+    method: "GET",
+    env: backendEnv,
+    fetchImpl,
+  });
 
   assert.equal(balances.kind, "response");
   assert.equal(objects.kind, "response");
+  assert.equal(intelligence.kind, "response");
   assert.equal(requests[0].url, `${backendEnv.ORHEX_API_BASE_URL}${balancePath}?limit=7&cursor=opaque%2Fcursor-1`);
   assert.equal(requests[1].url, `${backendEnv.ORHEX_API_BASE_URL}${objectsPath}?limit=20`);
+  assert.equal(requests[2].url, `${backendEnv.ORHEX_API_BASE_URL}${intelligencePath}`);
   for (const { init } of requests) {
     assert.equal(init.method, "GET");
     assert.equal(init.headers.get("authorization"), ["Bearer", validToken].join(" "));
     assert.equal(init.cache, "no-store");
     assert.equal(init.redirect, "error");
   }
+  assert.ok(requests[2].init.signal instanceof AbortSignal);
 });
 
 test("Sui BFF rejects malformed addresses, query parameters, and arbitrary upstream paths", async () => {
@@ -525,6 +562,7 @@ test("Sui BFF rejects malformed addresses, query parameters, and arbitrary upstr
     "/api/v1/sui/network",
     "/api/v1/sui/wallet/0x2/transaction",
     "/api/v1/sui/wallet/0x2/balances/extra",
+    "/api/v1/sui/intelligence/0x2/extra",
     "/api/v1/sui/wallet/0x2%2F..%2Fauth/session/balances",
   ]) {
     const result = await callBackend(path, {

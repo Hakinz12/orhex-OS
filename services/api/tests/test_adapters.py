@@ -5,7 +5,10 @@ import httpx
 import pytest
 from app.adapters.llm.gemini import (
     GeminiAdapter,
+    GeminiAuthenticationError,
+    GeminiModelUnavailableError,
     GeminiProviderError,
+    GeminiRateLimitError,
     GeminiResponseError,
     GeminiTimeoutError,
     GeminiUnavailableError,
@@ -236,7 +239,7 @@ async def test_gemini_conversation_adapter_rejects_malformed_provider_response(m
 async def test_gemini_conversation_adapter_surfaces_provider_and_timeout_failures(monkeypatch):
     client_factory = httpx.AsyncClient
     status_transport = httpx.MockTransport(
-        lambda _request: httpx.Response(429, json={"error": "details must stay private"})
+        lambda _request: httpx.Response(503, json={"error": "details must stay private"})
     )
     monkeypatch.setattr(
         "app.adapters.llm.gemini.httpx.AsyncClient",
@@ -255,6 +258,39 @@ async def test_gemini_conversation_adapter_surfaces_provider_and_timeout_failure
     )
     with pytest.raises(GeminiTimeoutError):
         await adapter.generate_conversation_response([{"role": "user", "content": "Hello"}])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "error_type"),
+    [
+        (401, GeminiAuthenticationError),
+        (403, GeminiAuthenticationError),
+        (404, GeminiModelUnavailableError),
+        (429, GeminiRateLimitError),
+    ],
+)
+async def test_gemini_conversation_provider_errors_are_classified(
+    monkeypatch,
+    status_code,
+    error_type,
+):
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            status_code,
+            json={"error": "provider details must not surface to clients"},
+        )
+    )
+    client_factory = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.adapters.llm.gemini.httpx.AsyncClient",
+        lambda **kwargs: client_factory(transport=transport, **kwargs),
+    )
+
+    with pytest.raises(error_type):
+        await GeminiAdapter(api_key="unit-test-gemini-key").generate_conversation_response(
+            [{"role": "user", "content": "Hello"}]
+        )
 
 
 @pytest.mark.asyncio

@@ -9,6 +9,8 @@ import type {
   OrhexTask,
   ActionProposal,
   OrchestrationRun,
+  VerifiedWalletStatus,
+  WalletVerificationChallenge,
 } from "./types";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
@@ -66,6 +68,30 @@ async function requestJson<T>(
 
 export function getSession(): Promise<SessionStatus> {
   return requestJson("/api/session");
+}
+
+export function getVerifiedWallet(): Promise<VerifiedWalletStatus> {
+  return requestJson("/api/bff/wallet/verified");
+}
+
+export function requestWalletVerificationChallenge(input: {
+  network: string;
+  address: string;
+}): Promise<WalletVerificationChallenge> {
+  return requestJson("/api/bff/wallet/challenge", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function submitWalletVerification(input: {
+  challenge_id: string;
+  signature: string;
+}): Promise<VerifiedWalletStatus> {
+  return requestJson("/api/bff/wallet/verify", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export function createSession(token: string): Promise<SessionStatus> {

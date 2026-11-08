@@ -2,6 +2,7 @@ import {
   SUI_DEVNET_CHAIN,
   SUI_MAINNET_CHAIN,
   SUI_TESTNET_CHAIN,
+  SuiSignPersonalMessage,
   StandardConnect,
   StandardEvents,
   getWallets,
@@ -33,6 +34,14 @@ interface ConnectFeature {
 
 interface EventsFeature {
   on(event: "change", listener: () => void): () => void;
+}
+
+interface SignPersonalMessageFeature {
+  signPersonalMessage(input: {
+    account: WalletAccount;
+    message: Uint8Array;
+    chain: string;
+  }): Promise<{ signature: string }>;
 }
 
 function isWallet(value: unknown): value is Wallet {
@@ -81,6 +90,19 @@ function getEventsFeature(wallet: Wallet): EventsFeature | null {
   return feature as EventsFeature;
 }
 
+function getSignPersonalMessageFeature(wallet: Wallet): SignPersonalMessageFeature | null {
+  const feature: unknown = wallet.features[SuiSignPersonalMessage];
+  if (
+    typeof feature !== "object" ||
+    feature === null ||
+    !("signPersonalMessage" in feature) ||
+    typeof feature.signPersonalMessage !== "function"
+  ) {
+    return null;
+  }
+  return feature as SignPersonalMessageFeature;
+}
+
 export function createSuiWalletAdapter(
   options: SuiWalletAdapterOptions = {},
 ): WalletConnectionAdapter {
@@ -92,6 +114,7 @@ export function createSuiWalletAdapter(
   let locallyDisconnected = false;
   let startCount = 0;
   let lifecycleVersion = 0;
+  let disposed = false;
   let registryUnsubscribers: Array<() => void> = [];
   const walletUnsubscribers = new Map<Wallet, () => void>();
   const accountListeners = new Set<(value: WalletAccountRecord | null) => void>();
@@ -192,6 +215,7 @@ export function createSuiWalletAdapter(
   };
 
   const start = (): (() => void) => {
+    if (startCount === 0) disposed = false;
     startCount += 1;
     const leaseVersion = lifecycleVersion;
     if (startCount === 1) {
@@ -210,7 +234,7 @@ export function createSuiWalletAdapter(
       released = true;
       if (leaseVersion !== lifecycleVersion) return;
       startCount = Math.max(0, startCount - 1);
-      if (startCount === 0) stopSubscriptions();
+      if (startCount === 0) dispose();
     };
   };
 
@@ -222,6 +246,8 @@ export function createSuiWalletAdapter(
   };
 
   const dispose = () => {
+    if (disposed) return;
+    disposed = true;
     lifecycleVersion += 1;
     startCount = 0;
     stopSubscriptions();
@@ -229,6 +255,8 @@ export function createSuiWalletAdapter(
     selectedWallet = null;
     locallyDisconnected = false;
     emit();
+    accountListeners.clear();
+    connectionListeners.clear();
   };
 
   const connect = async (connectOptions?: { silent?: boolean }): Promise<void> => {
@@ -241,6 +269,7 @@ export function createSuiWalletAdapter(
       return;
     }
     if (startCount === 0) {
+      disposed = false;
       for (const candidate of getCompatibleWallets()) subscribeWallet(candidate);
     }
 
@@ -277,6 +306,33 @@ export function createSuiWalletAdapter(
     emit();
   };
 
+  const signPersonalMessage = async (message: Uint8Array): Promise<string> => {
+    if (!account || !selectedWallet || status !== "connected") {
+      throw new Error("Connect a Sui wallet before verifying ownership.");
+    }
+    const feature = getSignPersonalMessageFeature(selectedWallet);
+    if (!feature) {
+      throw new Error("This wallet does not support secure personal-message signing.");
+    }
+    const activeAccount = selectedWallet.accounts.find((candidate) => {
+      const record = toWalletRecord(candidate);
+      if (!record || !account) return false;
+      return record.address === account.address && record.chainId === account.chainId;
+    });
+    if (!activeAccount) {
+      throw new Error("The connected wallet account changed. Reconnect and try again.");
+    }
+    const signed = await feature.signPersonalMessage({
+      account: activeAccount,
+      message,
+      chain: account.chainId,
+    });
+    if (!signed || typeof signed.signature !== "string" || !signed.signature) {
+      throw new Error("The wallet did not return a personal-message signature.");
+    }
+    return signed.signature;
+  };
+
   const onAccountChange = (listener: (value: WalletAccountRecord | null) => void) => {
     accountListeners.add(listener);
     return () => accountListeners.delete(listener);
@@ -298,6 +354,7 @@ export function createSuiWalletAdapter(
     get connected() { return status === "connected" && account !== null; },
     connect,
     disconnect,
+    signPersonalMessage,
     getActiveAccount: () => account,
     getViewModel,
     onAccountChange,

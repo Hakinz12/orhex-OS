@@ -7,7 +7,10 @@ from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.adapters.llm.gemini import (
+    GeminiAuthenticationError,
+    GeminiModelUnavailableError,
     GeminiProviderError,
+    GeminiRateLimitError,
     GeminiResponseError,
     GeminiTimeoutError,
     GeminiUnavailableError,
@@ -482,6 +485,9 @@ async def test_conversation_rejects_oversized_and_client_owned_fields(chat_harne
         (GeminiUnavailableError("private internal detail"), 503),
         (GeminiTimeoutError("private internal detail"), 504),
         (GeminiProviderError("private internal detail"), 503),
+        (GeminiAuthenticationError("private internal detail"), 503),
+        (GeminiModelUnavailableError("private internal detail"), 503),
+        (GeminiRateLimitError("private internal detail"), 429),
         (GeminiResponseError("private internal detail"), 502),
     ],
 )

@@ -3,9 +3,15 @@ const VISITOR_BOOTSTRAP_PATH = "/api/v1/visitor/bootstrap";
 const VISITOR_SESSION_PATH = "/api/v1/visitor/session";
 const MEMORY_STATUS_PATH = "/api/v1/memory/status";
 const SUI_WALLET_PATH = /^\/api\/v1\/sui\/wallet\/0x[0-9a-fA-F]{1,64}\/(balances|objects)$/;
+const WALLET_CHALLENGE_PATH = "/api/v1/wallet/verify-challenge";
+const WALLET_SIGNATURE_PATH = "/api/v1/wallet/verify-signature";
+const WALLET_STATUS_PATH = "/api/v1/wallet/verified";
 const MEMORY_WRITE_TIMEOUT_MS = 160_000;
 const CONVERSATION_REQUEST_TIMEOUT_MS = 40_000;
 const BACKEND_REQUEST_TIMEOUT_MS = 8_000;
+const SUI_WALLET_REQUEST_TIMEOUT_MS = 12_000;
+const SUI_INTELLIGENCE_TIMEOUT_MS = 15_000;
+const WALLET_VERIFICATION_TIMEOUT_MS = 12_000;
 const MAX_SUI_CURSOR_LENGTH = 512;
 const VISITOR_COOKIE_MAX_AGE_SECONDS = 31_536_000;
 
@@ -137,6 +143,9 @@ function isAllowedBackendPath(path, method) {
     method === "POST"
   ) return true;
   if (path === MEMORY_STATUS_PATH && method === "GET") return true;
+  if (path === WALLET_STATUS_PATH && method === "GET") return true;
+  if (path === WALLET_CHALLENGE_PATH && method === "POST") return true;
+  if (path === WALLET_SIGNATURE_PATH && method === "POST") return true;
   if (path === "/api/v1/tasks" && ["GET", "POST"].includes(method)) return true;
   if (path === "/api/v1/orchestration/run" && method === "POST") return true;
   if (path === "/api/v1/orchestration/latest" && method === "GET") return true;
@@ -165,9 +174,26 @@ function isAllowedBackendPath(path, method) {
 
 export async function callBackend(
   path,
-  { token, method = "GET", body, query, env = process.env, fetchImpl = fetch } = {},
+  {
+    token,
+    method = "GET",
+    body,
+    query,
+    origin,
+    env = process.env,
+    fetchImpl = globalThis.fetch.bind(globalThis),
+  } = {},
 ) {
   if (!isAllowedBackendPath(path, method)) {
+    return { kind: "rejected" };
+  }
+  const isWalletOriginBoundRequest =
+    path === WALLET_CHALLENGE_PATH || path === WALLET_SIGNATURE_PATH;
+  if (
+    (isWalletOriginBoundRequest &&
+      (typeof origin !== "string" || !origin)) ||
+    (origin !== undefined && !isWalletOriginBoundRequest)
+  ) {
     return { kind: "rejected" };
   }
   const isSuiWalletRequest = SUI_WALLET_PATH.test(path);
@@ -202,10 +228,12 @@ export async function callBackend(
   }
 
   try {
+    const backendFetch = fetchImpl.bind(globalThis);
     const headers = new Headers({ Accept: "application/json" });
     if (token) headers.set("Authorization", `Bearer ${token}`);
     if (body !== undefined) headers.set("Content-Type", "application/json");
-    const response = await fetchImpl(`${base}${path}${search}`, {
+    if (origin !== undefined) headers.set("Origin", origin);
+    const response = await backendFetch(`${base}${path}${search}`, {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -213,10 +241,16 @@ export async function callBackend(
       signal: AbortSignal.timeout(
         path === "/api/v1/memory/remember"
           ? MEMORY_WRITE_TIMEOUT_MS
-          : path === "/api/v1/conversations" ||
+          : isWalletOriginBoundRequest
+            ? WALLET_VERIFICATION_TIMEOUT_MS
+          : isSuiWalletRequest
+            ? SUI_WALLET_REQUEST_TIMEOUT_MS
+          : path.startsWith("/api/v1/sui/intelligence/")
+            ? SUI_INTELLIGENCE_TIMEOUT_MS
+            : path === "/api/v1/conversations" ||
               path.startsWith("/api/v1/conversations/")
             ? CONVERSATION_REQUEST_TIMEOUT_MS
-          : BACKEND_REQUEST_TIMEOUT_MS,
+            : BACKEND_REQUEST_TIMEOUT_MS,
       ),
       redirect: "error",
     });
@@ -502,6 +536,7 @@ export function safeErrorResponse(status) {
   if (status === 429) return { status: 429, body: { error: "rate_limited", message: "Too many requests. Please retry shortly." } };
   if (status === 501) return { status: 501, body: { error: "unsupported_operation", message: "Walrus permanent deletion is unsupported; the memory remains in Trash." } };
   if (status === 502) return { status: 502, body: { error: "memory_service_error", message: "The memory service could not complete the request." } };
+  if (status === 504) return { status: 504, body: { error: "memory_recall_timeout", message: "Memory search timed out. Please retry." } };
   return { status: 503, body: { error: "service_unavailable", message: "The memory service is temporarily unavailable." } };
 }
 

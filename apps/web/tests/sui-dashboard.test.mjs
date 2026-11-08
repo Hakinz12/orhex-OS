@@ -132,6 +132,28 @@ test("connected address loads native SUI, token metadata, and owned objects from
   assert.equal(state.objects[0].object_id, "0x3");
 });
 
+test("injected browser fetch retains its required global receiver", async () => {
+  const invocations = [];
+  const browserFetch = function (url) {
+    "use strict";
+    assert.equal(this, globalThis);
+    invocations.push(url);
+    return Promise.resolve(jsonResponse(
+      url.includes("/balances") ? balancePage(walletA) : objectPage(walletA),
+    ));
+  };
+  const controller = new SuiWalletDataController(browserFetch);
+  controller.setAddress(walletA);
+  await waitFor(() =>
+    controller.getSnapshot().balanceStatus === "ready" &&
+    controller.getSnapshot().objectsStatus === "ready",
+  );
+  assert.equal(invocations.length, 2);
+  assert.ok(invocations.some((url) => url.includes("/balances")));
+  assert.ok(invocations.some((url) => url.includes("/objects")));
+  controller.dispose();
+});
+
 test("empty balance and object responses settle into ready empty states", async () => {
   const controller = new SuiWalletDataController(async (url) =>
     jsonResponse(url.includes("/balances") ? balancePage(walletA) : objectPage(walletA)),
@@ -145,6 +167,11 @@ test("empty balance and object responses settle into ready empty states", async 
   assert.deepEqual(controller.getSnapshot().objects, []);
   assert.equal(controller.getSnapshot().hasMoreBalances, false);
   assert.equal(controller.getSnapshot().hasMoreObjects, false);
+});
+
+test("native SUI balance recognizes canonical padded coin type addresses", () => {
+  const native = balance(`0x${"0".repeat(63)}2::sui::SUI`, "1000000000", "1", 9, "SUI");
+  assert.equal(getNativeSuiBalance([native]), native);
 });
 
 test("pagination requests only the next page when requested", async () => {

@@ -5,7 +5,11 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from app.adapters.walrus import memwal
-from app.adapters.walrus.memwal import MemWalAdapter, WalrusAdapterError
+from app.adapters.walrus.memwal import (
+    MemWalAdapter,
+    WalrusAdapterError,
+    WalrusAdapterTimeoutError,
+)
 from app.core.config import settings
 
 
@@ -135,16 +139,10 @@ async def test_readiness_reports_sdk_health_connection_failure():
 
 
 @pytest.mark.asyncio
-async def test_confirmed_write_returns_sdk_blob_and_memory_ids():
+async def test_accepted_write_returns_job_id_without_polling():
     fake_client = SimpleNamespace(
-        remember_and_wait=AsyncMock(
-            return_value=SimpleNamespace(
-                id="memory-123",
-                blob_id="blob-456",
-                owner="owner-789",
-                namespace=TEST_NAMESPACE,
-            )
-        )
+        remember=AsyncMock(return_value=SimpleNamespace(job_id="job-123")),
+        get_remember_status=AsyncMock(),
     )
     adapter = MemWalAdapter(client=fake_client)
 
@@ -156,24 +154,21 @@ async def test_confirmed_write_returns_sdk_blob_and_memory_ids():
         idempotency_key="persisted-operation-1",
     )
 
-    assert result["status"] == "confirmed"
-    assert result["blob_id"] == "blob-456"
-    assert result["memory_id"] == "memory-123"
+    assert result["status"] == "pending"
+    assert result["job_id"] == "job-123"
     assert result["namespace"] == TEST_NAMESPACE
-    assert result["category"] == "goals"
-    fake_client.remember_and_wait.assert_awaited_once_with(
+    fake_client.remember.assert_awaited_once_with(
         text="A verified memory",
         namespace=TEST_NAMESPACE,
-        poll_interval_ms=1500,
-        timeout_ms=90_000,
         idempotency_key="persisted-operation-1",
     )
+    fake_client.get_remember_status.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_write_failure_is_returned_without_success_shape():
     fake_client = SimpleNamespace(
-        remember_and_wait=AsyncMock(side_effect=RuntimeError("fake SDK failure"))
+        remember=AsyncMock(side_effect=RuntimeError("fake SDK failure"))
     )
 
     result = await MemWalAdapter(client=fake_client).remember(
@@ -190,13 +185,11 @@ async def test_write_failure_is_returned_without_success_shape():
 @pytest.mark.parametrize(
     ("failure", "expected_status"),
     [
-        (memwal.MemWalRememberJobTimeout("job-1", 90_000), "timeout"),
         (memwal.MemWalRateLimited(["job-1"]), "rate_limited"),
-        (memwal.MemWalRememberJobFailed("job-1", "fake failure"), "failed"),
     ],
 )
 async def test_sdk_write_failures_keep_their_status(failure, expected_status):
-    fake_client = SimpleNamespace(remember_and_wait=AsyncMock(side_effect=failure))
+    fake_client = SimpleNamespace(remember=AsyncMock(side_effect=failure))
 
     result = await MemWalAdapter(client=fake_client).remember(
         namespace=TEST_NAMESPACE,
@@ -209,13 +202,16 @@ async def test_sdk_write_failures_keep_their_status(failure, expected_status):
 
 
 @pytest.mark.asyncio
-async def test_timeout_preserves_job_id_for_reconciliation():
+async def test_acceptance_timeout_is_not_reported_as_success(monkeypatch):
     fake_client = SimpleNamespace(
-        remember_and_wait=AsyncMock(
-            side_effect=memwal.MemWalRememberJobTimeout("job-uncertain", 90_000)
-        )
+        remember=AsyncMock(return_value=SimpleNamespace(job_id="unused")),
     )
 
+    async def wait_for(awaitable, timeout):
+        awaitable.close()
+        raise TimeoutError()
+
+    monkeypatch.setattr(memwal.asyncio, "wait_for", wait_for)
     result = await MemWalAdapter(client=fake_client).remember(
         namespace=TEST_NAMESPACE,
         text="A write with an uncertain result",
@@ -223,7 +219,7 @@ async def test_timeout_preserves_job_id_for_reconciliation():
     )
 
     assert result["status"] == "timeout"
-    assert result["job_id"] == "job-uncertain"
+    assert "job_id" not in result
 
 
 @pytest.mark.asyncio
@@ -249,6 +245,20 @@ async def test_remember_job_status_is_available_for_reconciliation():
         "namespace": TEST_NAMESPACE,
         "error": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_remember_status_timeout_is_bounded_and_explicit(monkeypatch):
+    fake_client = SimpleNamespace(get_remember_status=AsyncMock())
+
+    async def wait_for(awaitable, timeout):
+        awaitable.close()
+        raise TimeoutError()
+
+    monkeypatch.setattr(memwal.asyncio, "wait_for", wait_for)
+
+    with pytest.raises(WalrusAdapterTimeoutError, match="could not be confirmed"):
+        await MemWalAdapter(client=fake_client).get_remember_status("job-123")
 
 
 @pytest.mark.asyncio

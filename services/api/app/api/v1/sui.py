@@ -60,6 +60,14 @@ def _pagination_query(
 
 def _raise_provider_error(exc: TatumSuiError) -> None:
     logger.warning("Tatum Sui request failed: %s", exc.code)
+    if exc.code == "authentication_error":
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "provider_authentication_failed",
+                "message": "The Sui data provider rejected server authentication.",
+            },
+        ) from exc
     if exc.code in {"timeout", "connection_error"}:
         raise HTTPException(
             status_code=503,
@@ -181,18 +189,70 @@ async def get_wallet_intelligence(
     """Return an explainable, bounded intelligence snapshot for a public Sui wallet."""
     await _enforce_rate_limit(request)
     _require_provider_configuration()
-    try:
-        balances, activity, checkpoint = await asyncio.gather(
-            _sui_adapter.get_wallet_balances(address, limit=MAX_SUI_PAGE_LIMIT),
-            _sui_adapter.get_recent_activity(address, limit=20),
-            _sui_adapter.get_latest_checkpoint(),
-        )
-    except TatumSuiError as exc:
-        _raise_provider_error(exc)
-    validated = _validate_provider_response(SuiWalletBalancesResponse, balances)
-    validated_activity = _validate_activity_response(activity)
+    results = await asyncio.gather(
+        _sui_adapter.get_wallet_balances(address, limit=MAX_SUI_PAGE_LIMIT),
+        _sui_adapter.get_recent_activity(address, limit=20),
+        _sui_adapter.get_latest_checkpoint(),
+        return_exceptions=True,
+    )
+    sections = ("balances", "activity", "checkpoint")
+    values = dict(zip(sections, results))
+    provider_errors = []
+    for section, result in values.items():
+        if isinstance(result, TatumSuiError):
+            logger.warning("Tatum Sui %s read failed: %s", section, result.code)
+            code = (
+                "authentication_failed"
+                if result.code == "authentication_error"
+                else "provider_unavailable"
+                if result.code in {"timeout", "connection_error"}
+                else "provider_error"
+            )
+            values[section] = None
+            provider_errors.append({"section": section, "code": code})
+        elif isinstance(result, BaseException):
+            raise result
+
+    balances = values["balances"]
+    if balances is not None:
+        try:
+            balances = _validate_provider_response(SuiWalletBalancesResponse, balances)
+        except HTTPException as exc:
+            if exc.status_code != 502:
+                raise
+            balances = None
+            provider_errors.append({"section": "balances", "code": "invalid_response"})
+
+    activity = values["activity"]
+    if activity is not None:
+        try:
+            activity = _validate_activity_response(activity)
+        except HTTPException as exc:
+            if exc.status_code != 502:
+                raise
+            activity = None
+            provider_errors.append({"section": "activity", "code": "invalid_response"})
+
+    checkpoint = values["checkpoint"]
+    if checkpoint is not None and (
+        isinstance(checkpoint, bool) or not isinstance(checkpoint, int) or checkpoint < 0
+    ):
+        checkpoint = None
+        provider_errors.append({"section": "checkpoint", "code": "invalid_response"})
+
     return analyze_wallet(
-        address=address, network=validated.network,
-        balances=[item.model_dump() for item in validated.balances],
-        activity=validated_activity, checkpoint=checkpoint,
+        address=address,
+        network=(
+            balances.network
+            if balances is not None
+            else _sui_adapter.network
+        ),
+        balances=(
+            [item.model_dump() for item in balances.balances]
+            if balances is not None
+            else None
+        ),
+        activity=activity,
+        checkpoint=checkpoint,
+        provider_errors=provider_errors,
     )

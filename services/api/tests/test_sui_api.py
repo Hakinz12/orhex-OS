@@ -291,6 +291,31 @@ async def test_adapter_rejects_malformed_provider_data_and_invalid_pagination(mo
 
 
 @pytest.mark.asyncio
+async def test_adapter_accepts_empty_balance_and_object_pages(monkeypatch):
+    def handle(request):
+        query = request.content.decode()
+        connection = "balances" if "SuiAddressBalances" in query else "objects"
+        return httpx.Response(200, json={"data": {
+            "chainIdentifier": "4btiuiMPvEENsttpZC7CZ53DruC3MAgfznDbASZ7DR6S",
+            "address": {
+                connection: {
+                    "nodes": [],
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                }
+            },
+        }})
+
+    install_transport(monkeypatch, handle)
+    adapter = TatumSuiAdapter(api_key="unit-test-tatum-key")
+    balances = await adapter.get_wallet_balances(ADDRESS)
+    objects = await adapter.get_owned_objects(ADDRESS)
+    assert balances["balances"] == []
+    assert balances["pagination"] == {"next_cursor": None, "has_next_page": False}
+    assert objects["objects"] == []
+    assert objects["pagination"] == {"next_cursor": None, "has_next_page": False}
+
+
+@pytest.mark.asyncio
 async def test_adapter_rejects_unverified_devnet_and_wrong_chain_for_balances(monkeypatch):
     provider = {"chain": "69WiPg3DAQiwdxfncX6wYQ2siKwAe6L9BZthQea3JNMD"}
 
@@ -340,6 +365,10 @@ async def test_adapter_rejects_malformed_transaction_digest(monkeypatch):
         (
             lambda _request: httpx.Response(502, json={"message": "secret upstream body"}),
             "http_502",
+        ),
+        (
+            lambda _request: httpx.Response(401, json={"message": "secret authentication detail"}),
+            "authentication_error",
         ),
         (
             lambda _request: httpx.Response(
@@ -443,6 +472,88 @@ async def test_sui_api_returns_validated_balances_and_safe_provider_errors(
     assert timeout.status_code == 503
     assert timeout.json()["error"] == "provider_unavailable"
     assert "secret-timeout-detail" not in timeout.text
+
+
+@pytest.mark.asyncio
+async def test_sui_api_returns_native_balance_and_normalizes_balance_provider_failures(
+    api_harness, monkeypatch
+):
+    headers = await provision_bearer(api_harness)
+    monkeypatch.setattr(sui_api._sui_adapter, "api_key", "test-provider-key")
+    monkeypatch.setattr(
+        sui_api._sui_adapter,
+        "get_wallet_balances",
+        lambda *_args, **_kwargs: _balances_result(),
+    )
+    success = await api_harness.client.get(
+        f"/api/v1/sui/wallet/{ADDRESS}/balances",
+        headers=headers,
+    )
+    assert success.status_code == 200
+    assert success.json()["balances"][0]["amount"] == "1.5"
+    assert success.json()["balances"][0]["raw_balance"] == "1500000000"
+
+    monkeypatch.setattr(
+        sui_api._sui_adapter,
+        "get_wallet_balances",
+        lambda *_args, **_kwargs: _provider_error(),
+    )
+    failure = await api_harness.client.get(
+        f"/api/v1/sui/wallet/{ADDRESS}/balances",
+        headers=headers,
+    )
+    assert failure.status_code == 502
+    assert failure.json()["error"] == "provider_error"
+    assert "credential-never-return" not in failure.text
+
+    monkeypatch.setattr(
+        sui_api._sui_adapter,
+        "get_wallet_balances",
+        lambda *_args, **_kwargs: _provider_timeout(),
+    )
+    timeout = await api_harness.client.get(
+        f"/api/v1/sui/wallet/{ADDRESS}/balances",
+        headers=headers,
+    )
+    assert timeout.status_code == 503
+    assert timeout.json()["error"] == "provider_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_sui_api_accepts_empty_balance_and_object_results(api_harness, monkeypatch):
+    headers = await provision_bearer(api_harness)
+    install_api_provider(monkeypatch)
+
+    async def empty_balances(*_args, **_kwargs):
+        return SuiWalletBalancesResponse(
+            sui_address=ADDRESS,
+            network="mainnet",
+            balances=[],
+        ).model_dump()
+
+    monkeypatch.setattr(
+        sui_api._sui_adapter,
+        "get_wallet_balances",
+        empty_balances,
+    )
+    monkeypatch.setattr(
+        sui_api._sui_adapter,
+        "get_owned_objects",
+        lambda *_args, **_kwargs: _objects_result(),
+    )
+
+    balances = await api_harness.client.get(
+        f"/api/v1/sui/wallet/{ADDRESS}/balances",
+        headers=headers,
+    )
+    objects = await api_harness.client.get(
+        f"/api/v1/sui/wallet/{ADDRESS}/objects",
+        headers=headers,
+    )
+    assert balances.status_code == 200
+    assert balances.json()["balances"] == []
+    assert objects.status_code == 200
+    assert objects.json()["objects"] == []
 
 
 @pytest.mark.asyncio
@@ -669,7 +780,7 @@ async def _provider_timeout():
 
 
 @pytest.mark.asyncio
-async def test_wallet_intelligence_rejects_malformed_activity_and_marks_checkpoint_independent(
+async def test_wallet_intelligence_marks_malformed_activity_partial_and_keeps_other_reads(
     api_harness, monkeypatch
 ):
     headers = await provision_bearer(api_harness)
@@ -686,8 +797,10 @@ async def test_wallet_intelligence_rejects_malformed_activity_and_marks_checkpoi
     invalid = await api_harness.client.get(
         f"/api/v1/sui/intelligence/{ADDRESS}", headers=headers,
     )
-    assert invalid.status_code == 502
-    assert invalid.json()["error"] == "invalid_provider_response"
+    assert invalid.status_code == 200
+    assert invalid.json()["data_status"] == "partial"
+    assert invalid.json()["unavailable_sections"] == ["activity"]
+    assert invalid.json()["activity"] is None
 
     async def valid_activity(*_args, **_kwargs):
         return [{
@@ -701,6 +814,7 @@ async def test_wallet_intelligence_rejects_malformed_activity_and_marks_checkpoi
         f"/api/v1/sui/intelligence/{ADDRESS}", headers=headers,
     )
     assert valid.status_code == 200
+    assert valid.json()["data_status"] == "complete"
     assert valid.json()["checkpoint"] == 123
     assert valid.json()["snapshot_consistency"] == "independent_provider_reads"
 
@@ -722,9 +836,49 @@ async def test_wallet_intelligence_normalizes_provider_failure(api_harness, monk
     response = await api_harness.client.get(
         f"/api/v1/sui/intelligence/{ADDRESS}", headers=headers,
     )
-    assert response.status_code == 503
-    assert response.json()["error"] == "provider_unavailable"
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data_status"] == "partial"
+    assert payload["unavailable_sections"] == ["activity"]
+    assert payload["portfolio"]["known_token_count"] == 1
+    assert payload["activity"] is None
+    assert payload["checkpoint"] == 123
     assert "secret-timeout-detail" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_wallet_intelligence_preserves_successful_reads_on_provider_auth_failure(
+    api_harness, monkeypatch
+):
+    headers = await provision_bearer(api_harness)
+    install_api_provider(monkeypatch)
+
+    async def authentication_failure(*_args, **_kwargs):
+        raise TatumSuiError("authentication_error", "do-not-return-provider-secret")
+
+    async def valid_activity(*_args, **_kwargs):
+        return []
+
+    async def valid_checkpoint():
+        return 456
+
+    monkeypatch.setattr(sui_api._sui_adapter, "get_wallet_balances", authentication_failure)
+    monkeypatch.setattr(sui_api._sui_adapter, "get_recent_activity", valid_activity)
+    monkeypatch.setattr(sui_api._sui_adapter, "get_latest_checkpoint", valid_checkpoint)
+    response = await api_harness.client.get(
+        f"/api/v1/sui/intelligence/{ADDRESS}", headers=headers,
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data_status"] == "partial"
+    assert payload["unavailable_sections"] == ["balances"]
+    assert payload["provider_errors"] == [
+        {"section": "balances", "code": "authentication_failed"}
+    ]
+    assert payload["portfolio"] is None
+    assert payload["activity"]["sample_size"] == 0
+    assert payload["checkpoint"] == 456
+    assert "do-not-return-provider-secret" not in response.text
 
 
 async def _checkpoint_result(value):

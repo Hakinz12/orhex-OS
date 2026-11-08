@@ -11,7 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.llm.gemini import (
     GeminiAdapter,
+    GeminiAuthenticationError,
+    GeminiModelUnavailableError,
     GeminiProviderError,
+    GeminiRateLimitError,
     GeminiResponseError,
     GeminiTimeoutError,
     GeminiUnavailableError,
@@ -276,6 +279,30 @@ async def send_message(
             detail={
                 "code": "assistant_timeout",
                 "message": "The assistant did not respond in time. Please retry.",
+            },
+        ) from exc
+    except GeminiAuthenticationError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "assistant_provider_auth",
+                "message": "The AI provider rejected its server credentials. Ask an administrator to check the AI configuration.",
+            },
+        ) from exc
+    except GeminiModelUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "assistant_model_unavailable",
+                "message": "The configured AI model is unavailable. Ask an administrator to check the model configuration.",
+            },
+        ) from exc
+    except GeminiRateLimitError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "assistant_provider_rate_limited",
+                "message": "The AI provider is rate limited. Wait briefly, then retry your message.",
             },
         ) from exc
     except GeminiResponseError as exc:

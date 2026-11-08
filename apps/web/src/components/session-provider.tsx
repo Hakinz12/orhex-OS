@@ -143,26 +143,14 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   const rotateVisitor = useCallback(async () => {
     if (session.status !== "visitor") throw new Error("A visitor session is required.");
-    setSession({ status: "loading" });
-    try {
-      const updated = await rotateVisitorSession();
-      setSession(sessionView(updated));
-    } catch (reason) {
-      setSession({ status: "error", message: errorMessage(reason) });
-      throw reason;
-    }
+    const updated = await rotateVisitorSession();
+    setSession(sessionView(updated));
   }, [session]);
 
   const resetVisitor = useCallback(async () => {
     if (session.status !== "visitor") throw new Error("A visitor session is required.");
-    setSession({ status: "loading" });
-    try {
-      const updated = await resetVisitorSession();
-      setSession(sessionView(updated));
-    } catch (reason) {
-      setSession({ status: "error", message: errorMessage(reason) });
-      throw reason;
-    }
+    const updated = await resetVisitorSession();
+    setSession(sessionView(updated));
   }, [session]);
 
   const endVisitor = useCallback(async () => {
@@ -199,7 +187,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       {isSignIn || session.status === "visitor" || session.status === "pat" ? (
         children
       ) : session.status === "error" ? (
-        <main className="flex min-h-screen items-center justify-center px-4">
+        <section className="flex min-h-[60vh] items-center justify-center px-4">
           <section className="surface-card w-full max-w-md p-6 text-center">
             <h1 className="font-display text-xl font-semibold text-[#f0f3f6]">Session unavailable</h1>
             <p role="alert" className="mt-3 text-sm leading-6 text-[#a2afbb]">{session.message}</p>
@@ -207,9 +195,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
               Try again
             </button>
           </section>
-        </main>
+        </section>
       ) : session.status === "unauthenticated" ? (
-        <main className="flex min-h-screen items-center justify-center px-4">
+        <section className="flex min-h-[60vh] items-center justify-center px-4">
           <section className="surface-card w-full max-w-md p-6 text-center">
             <h1 className="font-display text-xl font-semibold text-[#f0f3f6]">No active session</h1>
             <p className="mt-3 text-sm leading-6 text-[#a2afbb]">Continue with a new private visitor space or sign in with a provisioned PAT.</p>
@@ -217,11 +205,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
               Continue without a PAT
             </button>
           </section>
-        </main>
+        </section>
       ) : (
-        <main className="flex min-h-screen items-center justify-center px-4">
+        <section className="flex min-h-[60vh] items-center justify-center px-4">
           <p role="status" className="text-sm text-[#a2afbb]">Preparing your private ORHEX space…</p>
-        </main>
+        </section>
       )}
     </SessionContext.Provider>
   );

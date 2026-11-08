@@ -41,6 +41,7 @@ from app.services.wallet_verification import (
 )
 
 _VERIFIER_ROOT = Path(__file__).resolve().parents[1] / "wallet-verifier"
+_FRONTEND_ORIGIN = "http://localhost:3000"
 
 
 def _derive_wallet_address(seed: int) -> str:
@@ -137,7 +138,11 @@ async def wallet_harness(tmp_path):
     app.include_router(wallet_router, prefix="/api/v1")
 
     try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            headers={"Origin": _FRONTEND_ORIGIN},
+        ) as client:
             yield SimpleNamespace(
                 client=client,
                 factory=session_factory,
@@ -232,7 +237,13 @@ async def test_wallet_challenge_creation_and_message_binding(wallet_harness):
         message_payload = json.loads(message)
         assert len(message_payload["nonce"]) == 32
         assert all(character in "0123456789abcdef" for character in message_payload["nonce"])
-        assert _challenge_message(record) == message
+        assert message_payload["origin"] == _FRONTEND_ORIGIN
+        assert message_payload["domain"] == "localhost:3000"
+        stored_expires_at = record.expires_at
+        if stored_expires_at.tzinfo is None:
+            stored_expires_at = stored_expires_at.replace(tzinfo=timezone.utc)
+        assert message_payload["expires_at"] == stored_expires_at.isoformat().replace("+00:00", "Z")
+        assert _challenge_message(record, origin=_FRONTEND_ORIGIN) == message
 
 
 @pytest.mark.asyncio
@@ -486,14 +497,14 @@ async def test_wallet_invalid_signature_wrong_address_and_network_rejected(walle
     other_address = _derive_wallet_address(11)
     challenge_2 = await wallet_harness.client.post(
         "/api/v1/wallet/verify-challenge",
-        json={"purpose": "wallet_link", "network": "testnet", "address": other_address},
+        json={"purpose": "wallet_link", "network": "mainnet", "address": other_address},
         headers={"Authorization": f"Bearer {visitor.credential}"},
     )
     assert challenge_2.status_code == 200, challenge_2.text
     message_2 = base64.b64decode(challenge_2.json()["message"])
     wrong_network_message = message_2.replace(
-        b'"network":"testnet"',
         b'"network":"mainnet"',
+        b'"network":"testnet"',
     )
     _, wrong_network_signature = _sign_message(wrong_network_message, 11)
     wrong_network_response = await wallet_harness.client.post(
@@ -513,7 +524,7 @@ async def test_wallet_invalid_signature_wrong_address_and_network_rejected(walle
     )
     assert response.status_code == 200
 
-    wrong_network_message = message_2.replace(b'"network":"testnet"', b'"network":"mainnet"')
+    wrong_network_message = message_2.replace(b'"network":"mainnet"', b'"network":"testnet"')
     _, wrong_network_signature = _sign_message(wrong_network_message, 11)
     response_3 = await wallet_harness.client.post(
         "/api/v1/wallet/verify-signature",
@@ -763,6 +774,8 @@ async def test_association_insert_failure_rolls_back_challenge_consumption(walle
         ("purpose", "wallet_recovery"),
         ("visitor_identity_id", "another-visitor"),
         ("user_id", "another-user"),
+        ("origin", "http://127.0.0.1:3000"),
+        ("expires_at", "2099-01-01T00:00:00Z"),
     ],
 )
 async def test_signature_is_bound_to_all_challenge_context(
@@ -774,7 +787,9 @@ async def test_signature_is_bound_to_all_challenge_context(
     challenge_id, _ = await _issue_and_sign(wallet_harness, visitor, 7)
     async with wallet_harness.factory() as session:
         record = await session.get(WalletVerificationChallenge, challenge_id)
-        signed_message = json.loads(_challenge_message(record))
+        signed_message = json.loads(
+            _challenge_message(record, origin=_FRONTEND_ORIGIN)
+        )
 
     signed_message[field] = replacement
     altered_bytes = json.dumps(

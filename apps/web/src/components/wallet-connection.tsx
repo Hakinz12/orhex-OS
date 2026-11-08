@@ -1,73 +1,116 @@
 "use client";
 
-import { Wallet2Icon, LogOutIcon, RefreshCwIcon } from "lucide-react";
+import { useRef, useState } from "react";
+import { BadgeCheck, LoaderCircle, LogOut, ShieldAlert, Wallet2 } from "lucide-react";
 
 import { useWalletConnection } from "@/lib/wallet/state";
 
 export function WalletConnectionPanel() {
-  const { status, address, shortAddress, providerId, network, capabilities, error, connect, disconnect } = useWalletConnection();
+  const {
+    status,
+    address,
+    shortAddress,
+    network,
+    error,
+    verified,
+    verificationAvailable,
+    verificationLoading,
+    verificationBusy,
+    verificationError,
+    connect,
+    disconnect,
+    verify,
+  } = useWalletConnection();
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const actionInFlight = useRef(false);
   const connected = status === "connected" && !!address;
-  const pending = status === "connecting";
+  const pending = status === "connecting" || verificationLoading;
+
+  async function runWalletAction(action: () => Promise<void>) {
+    if (actionInFlight.current) return;
+    actionInFlight.current = true;
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await action();
+    } catch (reason) {
+      setActionError(
+        reason instanceof Error
+          ? reason.message
+          : "The wallet action could not be completed.",
+      );
+    } finally {
+      actionInFlight.current = false;
+      setActionBusy(false);
+    }
+  }
 
   return (
-    <section className="surface-card p-5 sm:p-7">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-start gap-3">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#334351] bg-[#19242e] text-[#bdd4e5]">
-            <Wallet2Icon className="h-[18px] w-[18px]" />
-          </span>
-          <div>
-            <p className="eyebrow">Wallet access</p>
-            <h2 className="mt-2 text-[15px] font-semibold text-[#e3ebf3]">Sui connection</h2>
-            {connected ? (
-              <p className="mt-2 text-[12px] text-[#a2b4c4]">
-                Connected to {network} as <span className="font-medium text-[#dfeaf6]">{shortAddress}</span>
-              </p>
-            ) : (
-              <p className="mt-2 text-[12px] text-[#a2b4c4]">Connect an installed Sui wallet to authorize read-only public address access.</p>
-            )}
-          </div>
-        </div>
-        {connected ? (
-          <button type="button" className="secondary-button" onClick={() => void disconnect()}>
-            <LogOutIcon className="h-4 w-4" />
-            Disconnect
+    <div className="flex min-w-0 flex-col items-start gap-1.5 sm:items-end">
+      <div className="flex max-w-full flex-wrap items-center justify-start gap-2 sm:justify-end">
+        {!connected ? (
+          <button
+            type="button"
+            className="primary-button min-h-10"
+            onClick={() => void runWalletAction(connect)}
+            disabled={pending || actionBusy}
+          >
+            {pending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Wallet2 className="h-4 w-4" />}
+            {status === "connecting" || actionBusy ? "Connecting…" : "Connect Wallet"}
           </button>
+        ) : verified ? (
+          <div
+            className="inline-flex min-h-10 max-w-full items-center gap-2 rounded-xl border border-[#355244] bg-[#14231d] px-3 py-2 text-left"
+            aria-label={`Wallet ${shortAddress} authenticated`}
+          >
+            <BadgeCheck className="h-4 w-4 shrink-0 text-[#9bc6a7]" />
+            <span className="min-w-0">
+              <span className="block truncate text-[11px] font-semibold text-[#d3e8d8]">{shortAddress}</span>
+              <span className="block text-[9px] text-[#99b7a2]">Authenticated on {network}</span>
+            </span>
+          </div>
         ) : (
-          <button type="button" className="primary-button" onClick={() => void connect()} disabled={pending}>
-            {pending ? <RefreshCwIcon className="h-4 w-4 animate-spin" /> : <Wallet2Icon className="h-4 w-4" />}
-            {pending ? "Connecting…" : "Connect Wallet"}
+          <button
+            type="button"
+            className="primary-button min-h-10"
+            onClick={() => void runWalletAction(verify)}
+            disabled={verificationBusy || actionBusy || verificationLoading || !verificationAvailable}
+            title={!verificationAvailable ? "Wallet verification requires an active visitor session." : undefined}
+          >
+            {verificationBusy || actionBusy ? (
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+            ) : (
+              <ShieldAlert className="h-4 w-4" />
+            )}
+            {verificationBusy || actionBusy ? "Verifying…" : "Verify Wallet"}
+          </button>
+        )}
+        {connected && (
+          <button
+            type="button"
+            className="secondary-button min-h-10 px-3"
+            onClick={() => void runWalletAction(disconnect)}
+            disabled={actionBusy || verificationBusy}
+            aria-label="Disconnect wallet"
+            title="Disconnect wallet"
+          >
+            {actionBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <LogOut className="h-4 w-4" />}
+            <span className="hidden sm:inline">{actionBusy ? "Disconnecting…" : "Disconnect"}</span>
           </button>
         )}
       </div>
-
-      {connected && (
-        <div className="mt-5 rounded-xl border border-[#26323e] bg-[#0f151c] p-3.5">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-[#8fa4b8]">Provider</p>
-              <p className="mt-1 text-[12px] text-[#dfeaf6]">{providerId}</p>
-            </div>
-            <div>
-              <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-[#8fa4b8]">Network</p>
-              <p className="mt-1 text-[12px] text-[#dfeaf6]">{network}</p>
-            </div>
-          </div>
-          <p className="mt-3 text-[11px] text-[#97a8b8]">Address: {address}</p>
-          <p className="mt-2 text-[10px] text-[#7f8d9d]">Supported capabilities: {capabilities.length ? capabilities.join(", ") : "none"}</p>
-        </div>
-      )}
-
-      <p className="mt-4 text-[10px] leading-5 text-[#7f8d9d]">
-        Disconnecting here clears ORHEX&apos;s local connection state. It may not revoke this site&apos;s authorization in your wallet.
-        A connected address is not proof of ownership.
-      </p>
-
-      {error && (
-        <p role="alert" className="mt-4 rounded-xl border border-[#5a3739] bg-[#26191c] px-3 py-2.5 text-[12px] text-[#e2a8a4]">
-          {error}
+      {connected && !verified && (
+        <p className="max-w-[280px] text-[10px] leading-4 text-[#8998a7] sm:text-right">
+          Connected as {shortAddress}; connection alone does not verify ownership.
+          {!verificationAvailable && " An active visitor session is required to verify."}
         </p>
       )}
-    </section>
+      {(actionError || verificationError || error) && (
+        <p role="alert" className="max-w-[320px] text-[10px] leading-4 text-[#e2a8a4] sm:text-right">
+          {actionError || verificationError || error}
+        </p>
+      )}
+    </div>
   );
 }

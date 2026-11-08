@@ -20,6 +20,8 @@ from app.services.wallet_verification import (
     consume_wallet_challenge,
     create_wallet_verification_challenge,
     fetch_wallet_verification_challenge,
+    normalize_wallet_origin,
+    resolve_verified_visitor_wallet,
 )
 
 router = APIRouter(prefix="/wallet", tags=["Sui Wallet Verification"])
@@ -64,6 +66,13 @@ class WalletVerificationResponse(BaseModel):
     visitor_identity_id: str
 
 
+class WalletStatusResponse(BaseModel):
+    verified: bool
+    chain: str | None = None
+    network: str | None = None
+    address: str | None = None
+
+
 def _client_key(request: Request) -> str:
     return request.client.host if request.client is not None else "unknown"
 
@@ -81,6 +90,40 @@ async def _enforce_rate_limit(request: Request, limiter: SensitiveEndpointRateLi
         )
 
 
+def _request_origin(request: Request) -> str:
+    try:
+        return normalize_wallet_origin(request.headers.get("origin"))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "invalid_application_origin",
+                "message": "Wallet verification must be requested by an allowed ORHEX origin.",
+            },
+        ) from exc
+
+
+@router.get("/verified", response_model=WalletStatusResponse)
+async def get_verified_wallet(
+    visitor: AuthenticatedVisitorContext = Depends(get_current_visitor),
+    db=Depends(get_db),
+):
+    """Return only the wallet verified for the authenticated visitor identity."""
+    association = await resolve_verified_visitor_wallet(
+        db,
+        user_id=visitor.user.id,
+        visitor_identity_id=visitor.identity.id,
+    )
+    if association is None:
+        return WalletStatusResponse(verified=False)
+    return WalletStatusResponse(
+        verified=True,
+        chain=association.chain,
+        network=association.network,
+        address=association.canonical_address,
+    )
+
+
 @router.post("/verify-challenge", response_model=WalletChallengeResponse)
 async def issue_wallet_link_challenge(
     request: Request,
@@ -90,6 +133,7 @@ async def issue_wallet_link_challenge(
 ):
     """Create a short-lived Sui wallet challenge for the authenticated visitor."""
     await _enforce_rate_limit(request, _wallet_challenge_limiter)
+    origin = _request_origin(request)
     try:
         challenge, message = await create_wallet_verification_challenge(
             db,
@@ -98,6 +142,7 @@ async def issue_wallet_link_challenge(
             purpose=payload.purpose,
             network=payload.network,
             address=payload.address,
+            origin=origin,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -136,6 +181,7 @@ async def verify_wallet_signature(
 ):
     """Verify a wallet signature and, if valid, create the verified wallet link."""
     await _enforce_rate_limit(request, _wallet_verification_limiter)
+    origin = _request_origin(request)
     try:
         challenge = await fetch_wallet_verification_challenge(
             db,
@@ -150,6 +196,7 @@ async def verify_wallet_signature(
             visitor_identity_id=visitor.identity.id,
             user_id=visitor.user.id,
             signature=payload.signature,
+            origin=origin,
         )
     except WalletVerificationUnavailableError as exc:
         raise HTTPException(
