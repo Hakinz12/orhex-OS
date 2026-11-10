@@ -1,5 +1,7 @@
 """Main entrypoint for ORHEX OS FastAPI Service."""
 import logging
+import re
+from uuid import UUID, uuid4
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -29,6 +31,10 @@ logging.basicConfig(
 logger = logging.getLogger("orhex.api")
 _sensitive_rate_limiter = SensitiveEndpointRateLimiter(
     requests_per_minute=settings.AUTH_RATE_LIMIT_PER_MINUTE
+)
+_CORRELATION_ID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
 )
 
 
@@ -62,6 +68,12 @@ app = FastAPI(
 
 @app.middleware("http")
 async def limit_memory_api_requests(request: Request, call_next):
+    supplied_correlation_id = request.headers.get("x-orhex-correlation-id", "")
+    request.state.correlation_id = (
+        str(UUID(supplied_correlation_id))
+        if _CORRELATION_ID_PATTERN.fullmatch(supplied_correlation_id)
+        else str(uuid4())
+    )
     if (
         request.url.path.startswith("/api/v1/memory/")
         or request.url.path.startswith("/api/v1/conversations")
@@ -82,7 +94,9 @@ async def limit_memory_api_requests(request: Request, call_next):
                 },
                 headers={"Retry-After": str(retry_after)},
             )
-    return await call_next(request)
+    response = await call_next(request)
+    response.headers["X-ORHEX-Correlation-ID"] = request.state.correlation_id
+    return response
 
 
 @app.exception_handler(HTTPException)
