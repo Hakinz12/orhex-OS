@@ -6,6 +6,7 @@ env/
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
 
 # Environment Variables & Secrets (CRITICAL: Never commit credentials)
 .env

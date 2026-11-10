@@ -1,27 +1,185 @@
 """Database connection and session management for ORHEX OS."""
+import ipaddress
 from typing import AsyncGenerator
+from urllib.parse import parse_qsl, urlsplit
 from sqlalchemy import event, inspect
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.orm import declarative_base
 from app.core.config import settings
 
-# If user provided a postgresql:// URL, convert to async driver postgresql+asyncpg:// if needed
-db_url = settings.DATABASE_URL
-if db_url.startswith("postgresql://"):
-    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-elif db_url.startswith("sqlite:///") and not db_url.startswith("sqlite+aiosqlite:///"):
-    db_url = db_url.replace("sqlite:///", "sqlite+aiosqlite:///", 1)
 
-# SQLite on Windows requires connect_args check_same_thread=False
-connect_args = {}
-if "sqlite" in db_url:
-    connect_args["check_same_thread"] = False
+_POSTGRESQL_QUERY_ALLOWLIST = {
+    "application_name",
+    "channel_binding",
+    "connect_timeout",
+    "sslmode",
+}
+_POSTGRESQL_SSLMODES = {
+    "allow",
+    "disable",
+    "prefer",
+    "require",
+    "verify-ca",
+    "verify-full",
+}
+_EXTERNAL_PRODUCTION_SSLMODES = {"require", "verify-ca", "verify-full"}
 
+
+def normalize_database_url(database_url: str | URL) -> URL:
+    """Normalize supported async database URLs without exposing credentials."""
+    url = make_url(database_url) if isinstance(database_url, str) else database_url
+    if url.drivername in {
+        "postgres",
+        "postgresql",
+        "postgres+asyncpg",
+        "postgresql+asyncpg",
+        "postgres+psycopg",
+        "postgresql+psycopg",
+        "postgres+psycopg_async",
+        "postgresql+psycopg_async",
+    }:
+        return url.set(drivername="postgresql+psycopg")
+    if url.drivername == "sqlite":
+        return url.set(drivername="sqlite+aiosqlite")
+    return url
+
+
+def postgresql_connection_target(database_url: str | URL) -> tuple[str, int, str]:
+    """Return an unambiguous PostgreSQL target, rejecting query-based overrides."""
+    if isinstance(database_url, str):
+        try:
+            raw_parameters = parse_qsl(
+                urlsplit(database_url).query,
+                keep_blank_values=True,
+                strict_parsing=True,
+            )
+        except ValueError:
+            raise ValueError(
+                "DATABASE_URL contains malformed PostgreSQL parameters."
+            ) from None
+        raw_names = [name for name, _value in raw_parameters]
+        if (
+            len(raw_names) != len(set(raw_names))
+            or any(
+                name != name.casefold()
+                or name not in _POSTGRESQL_QUERY_ALLOWLIST
+                or not value
+                for name, value in raw_parameters
+            )
+        ):
+            raise ValueError(
+                "DATABASE_URL contains unsupported or ambiguous PostgreSQL parameters."
+            )
+
+    url = normalize_database_url(database_url)
+    if url.drivername != "postgresql+psycopg":
+        raise ValueError("A PostgreSQL Psycopg URL is required.")
+
+    unsupported_parameters = {
+        key.casefold()
+        for key in url.query
+        if key != key.casefold() or key.casefold() not in _POSTGRESQL_QUERY_ALLOWLIST
+    }
+    if unsupported_parameters or any(
+        isinstance(value, tuple) for value in url.query.values()
+    ):
+        raise ValueError(
+            "DATABASE_URL contains unsupported or ambiguous PostgreSQL parameters."
+        )
+    channel_binding = url.query.get("channel_binding")
+    if channel_binding is not None and channel_binding != "require":
+        raise ValueError("DATABASE_URL contains an unsupported channel_binding value.")
+    sslmode = url.query.get("sslmode")
+    if sslmode is not None and sslmode not in _POSTGRESQL_SSLMODES:
+        raise ValueError("DATABASE_URL contains an unsupported PostgreSQL sslmode.")
+    connect_timeout = url.query.get("connect_timeout")
+    if connect_timeout is not None:
+        try:
+            if int(connect_timeout) <= 0:
+                raise ValueError
+        except ValueError:
+            raise ValueError(
+                "DATABASE_URL contains an invalid PostgreSQL connect_timeout."
+            ) from None
+
+    host = url.host
+    if not host or "," in host or not url.database:
+        raise ValueError("DATABASE_URL must specify one PostgreSQL host and database.")
+    port = url.port or 5432
+    if not 1 <= port <= 65535:
+        raise ValueError("DATABASE_URL contains an invalid PostgreSQL port.")
+    return host, port, url.database
+
+
+def _is_local_database_host(host: str | None) -> bool:
+    if (
+        not host
+        or host.casefold() == "localhost"
+        or host.casefold().endswith(".localhost")
+    ):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def database_engine_configuration(
+    database_url: str | URL,
+    *,
+    app_env: str,
+    pool_recycle: int = 300,
+) -> tuple[URL, dict]:
+    """Return a normalized URL and bounded, dialect-appropriate engine options.
+
+    libpq's ``sslmode=require`` encrypts traffic but does not validate the
+    server certificate or hostname; ``verify-ca`` validates the certificate
+    chain, while ``verify-full`` also validates the hostname.
+    """
+    url = normalize_database_url(database_url)
+
+    if url.drivername == "postgresql+psycopg":
+        host, _port, _database = postgresql_connection_target(url)
+        sslmode = url.query.get("sslmode")
+        if isinstance(sslmode, tuple):
+            raise ValueError("DATABASE_URL must not contain multiple sslmode values.")
+
+        external_production_database = (
+            app_env.strip().casefold() == "production"
+            and not _is_local_database_host(host)
+        )
+        if external_production_database:
+            if sslmode is not None and sslmode not in _EXTERNAL_PRODUCTION_SSLMODES:
+                raise ValueError(
+                    "External production PostgreSQL connections require TLS."
+                )
+            if sslmode is None:
+                url = url.update_query_dict({"sslmode": "require"})
+
+        return url, {
+            "pool_pre_ping": True,
+            "pool_recycle": pool_recycle,
+            "pool_size": 5,
+            "max_overflow": 2,
+            "pool_timeout": 30,
+        }
+
+    if url.drivername == "sqlite+aiosqlite":
+        return url, {"connect_args": {"check_same_thread": False}}
+
+    return url, {}
+
+
+db_url, _engine_options = database_engine_configuration(
+    settings.DATABASE_URL,
+    app_env=settings.APP_ENV,
+)
 engine = create_async_engine(
     db_url,
     echo=(settings.APP_ENV == "development"),
-    connect_args=connect_args,
-    future=True
+    future=True,
+    **_engine_options,
 )
 
 
@@ -31,7 +189,7 @@ def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
     cursor.close()
 
 
-if "sqlite" in db_url:
+if db_url.drivername == "sqlite+aiosqlite":
     event.listen(engine.sync_engine, "connect", _enable_sqlite_foreign_keys)
 
 
@@ -304,21 +462,29 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
-async def init_db() -> None:
-    """Initialize database tables."""
+def _apply_startup_migrations(connection) -> None:
+    """Apply the existing in-place migrations to the current schema."""
+    _migrate_memory_sync_records(connection)
+    _migrate_user_access_tokens(connection)
+    _migrate_user_memory_trash_retention(connection)
+    _migrate_anonymous_visitor_identity(connection)
+    _migrate_wallet_verification(connection)
+    _migrate_conversations(connection)
+    Base.metadata.tables["anticipation_insights"].create(
+        connection, checkfirst=True
+    )
+    _migrate_orchestration_runs(connection)
+
+
+def _initialize_schema(connection) -> None:
+    """Create current tables and apply the existing in-place migrations."""
     import app.models.domain  # noqa: F401 - register models before create_all
 
+    Base.metadata.create_all(connection)
+    _apply_startup_migrations(connection)
+
+
+async def init_db() -> None:
+    """Initialize database tables."""
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(_migrate_memory_sync_records)
-        await conn.run_sync(_migrate_user_access_tokens)
-        await conn.run_sync(_migrate_user_memory_trash_retention)
-        await conn.run_sync(_migrate_anonymous_visitor_identity)
-        await conn.run_sync(_migrate_wallet_verification)
-        await conn.run_sync(_migrate_conversations)
-        await conn.run_sync(
-            lambda connection: Base.metadata.tables["anticipation_insights"].create(
-                connection, checkfirst=True
-            )
-        )
-        await conn.run_sync(_migrate_orchestration_runs)
+        await conn.run_sync(_initialize_schema)
