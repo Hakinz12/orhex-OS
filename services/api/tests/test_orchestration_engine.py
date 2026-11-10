@@ -42,7 +42,7 @@ async def test_orchestration_refreshes_signals_and_returns_approval_gated_next_s
     summary = json.loads(record.summary_json)
     assert summary["decision"] == "approval_required"
     assert summary["counts"]["overdue_tasks"] == 1
-    assert summary["counts"]["pending_approvals"] == 1
+    assert summary["counts"]["pending_approvals"] == 2
     assert summary["safety"]["external_actions_executed"] == 0
     assert any(item["kind"] == "overdue_task" for item in summary["recommendations"])
     assert any(item["requires_approval"] for item in summary["recommendations"])

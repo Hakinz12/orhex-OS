@@ -513,7 +513,11 @@ async def restore_memory(
 
 
 async def list_memories_for_user(
-    session: AsyncSession, *, user_id: str, folder: str
+    session: AsyncSession,
+    *,
+    user_id: str,
+    folder: str,
+    limit: Optional[int] = None,
 ) -> List[MemorySyncRecord]:
     """List confirmed memories in an owner-scoped active or Trash folder."""
     if folder not in {"active", "trash"}:
@@ -536,11 +540,16 @@ async def list_memories_for_user(
             )
         else:
             conditions.append(MemorySyncRecord.trashed_at.is_not(None))
-        result = await session.execute(
+        query = (
             select(MemorySyncRecord)
             .where(*conditions)
             .order_by(MemorySyncRecord.created_at.desc())
         )
+        if limit is not None:
+            if limit < 1:
+                raise ValueError("Memory list limit must be positive.")
+            query = query.limit(limit)
+        result = await session.execute(query)
         records = list(result.scalars())
         await session.commit()
         return records

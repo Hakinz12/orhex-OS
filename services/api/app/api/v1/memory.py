@@ -5,7 +5,7 @@ from datetime import timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Query, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -296,6 +296,7 @@ async def recall_memories(
 )
 async def list_memory_records(
     folder: str,
+    limit: Optional[int] = Query(default=None, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_memory_user),
 ):
@@ -303,7 +304,9 @@ async def list_memory_records(
     if folder not in {"active", "trash"}:
         return _error(404, "not_found", "The requested memory folder was not found.")
     try:
-        records = await list_memories_for_user(db, user_id=user.id, folder=folder)
+        records = await list_memories_for_user(
+            db, user_id=user.id, folder=folder, limit=limit
+        )
     except MemoryOwnerNotFoundError:
         return _error(403, "invalid_owner", "Authenticated user is not provisioned.")
     except MemoryPersistenceError as exc:

@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.domain import Commitment, Goal, AnticipationInsight
+from app.models.domain import Commitment, Goal, Task, AnticipationInsight
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -55,12 +55,53 @@ async def refresh_anticipations(db: AsyncSession, *, user_id: str,
     now = _aware(now or datetime.now(timezone.utc))
     horizon = now + timedelta(days=7)
     goals = list((await db.scalars(select(Goal).where(
-        Goal.user_id == user_id, Goal.status == "active"
+        Goal.user_id == user_id,
+        Goal.status == "active",
+        Goal.target_date.is_not(None),
+        Goal.target_date <= horizon,
     ))).all())
     commitments = list((await db.scalars(select(Commitment).where(
-        Commitment.user_id == user_id, Commitment.is_completed.is_(False)
+        Commitment.user_id == user_id,
+        Commitment.is_completed.is_(False),
+        Commitment.due_date.is_not(None),
+        Commitment.due_date <= horizon,
+    ))).all())
+    tasks = list((await db.scalars(select(Task).where(
+        Task.user_id == user_id,
+        Task.status.in_(("todo", "in_progress")),
+        Task.due_at.is_not(None),
+        Task.due_at <= horizon,
     ))).all())
     candidates: list[dict[str, Any]] = []
+
+    for task in tasks:
+        due = _aware(task.due_at)
+        if due is None or due > horizon:
+            continue
+        overdue = due < now
+        kind = "task_overdue" if overdue else "task_due_soon"
+        candidates.append(_candidate(
+            user_id=user_id,
+            kind=kind,
+            source_type="task",
+            source_id=task.id,
+            title=f"{'Overdue task' if overdue else 'Coming up'}: {task.title[:180]}",
+            explanation=(
+                "This open task has passed its due date. Review it, reschedule it, or mark it complete."
+                if overdue
+                else "This open task is due within the next seven days. Consider setting aside time for it."
+            ),
+            priority="high" if overdue else "medium",
+            due_at=due,
+            evidence={
+                "task_id": task.id,
+                "task_title": task.title,
+                "task_status": task.status,
+                "due_at": due.isoformat(),
+                "rule": "task_due_window_v1",
+            },
+            now=now,
+        ))
 
     for item in commitments:
         due = _aware(item.due_date)

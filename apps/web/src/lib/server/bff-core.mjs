@@ -206,27 +206,46 @@ export async function callBackend(
     return { kind: "rejected" };
   }
   const isSuiWalletRequest = SUI_WALLET_PATH.test(path);
+  const isMemoryListRequest =
+    /^\/api\/v1\/memory\/records\/(active|trash)$/.test(path) && method === "GET";
   let search = "";
   if (query !== undefined) {
-    if (!isSuiWalletRequest || !query || typeof query !== "object" || Array.isArray(query)) {
-      return { kind: "rejected" };
-    }
     if (
-      Object.keys(query).some((key) => !["limit", "cursor"].includes(key)) ||
-      (query.limit !== undefined &&
-        (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > 50)) ||
-      (query.cursor !== undefined &&
-        (typeof query.cursor !== "string" ||
-          query.cursor.length < 1 ||
-          query.cursor.length > MAX_SUI_CURSOR_LENGTH ||
-          query.cursor !== query.cursor.trim() ||
-          /[\u0000-\u001f\u007f]/.test(query.cursor)))
+      (!isSuiWalletRequest && !isMemoryListRequest) ||
+      !query ||
+      typeof query !== "object" ||
+      Array.isArray(query)
     ) {
       return { kind: "rejected" };
     }
+    if (isMemoryListRequest) {
+      if (
+        Object.keys(query).some((key) => key !== "limit") ||
+        (query.limit !== undefined &&
+          (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > 100))
+      ) {
+        return { kind: "rejected" };
+      }
+    } else {
+      if (
+        Object.keys(query).some((key) => !["limit", "cursor"].includes(key)) ||
+        (query.limit !== undefined &&
+          (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > 50)) ||
+        (query.cursor !== undefined &&
+          (typeof query.cursor !== "string" ||
+            query.cursor.length < 1 ||
+            query.cursor.length > MAX_SUI_CURSOR_LENGTH ||
+            query.cursor !== query.cursor.trim() ||
+            /[\u0000-\u001f\u007f]/.test(query.cursor)))
+      ) {
+        return { kind: "rejected" };
+      }
+    }
     const params = new URLSearchParams();
     if (query.limit !== undefined) params.set("limit", String(query.limit));
-    if (query.cursor !== undefined) params.set("cursor", query.cursor);
+    if (!isMemoryListRequest && query.cursor !== undefined) {
+      params.set("cursor", query.cursor);
+    }
     search = params.size > 0 ? `?${params.toString()}` : "";
   }
   let base;

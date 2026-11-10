@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.auth import provision_user
 from app.core.database import Base, _enable_sqlite_foreign_keys, get_db
 from app.main import app
-from app.models.domain import AnticipationInsight, Commitment, Goal, User
+from app.models.domain import AnticipationInsight, Commitment, Goal, Task, User
 from app.services.anonymous_visitor_identity import provision_visitor_identity
 from app.services.anticipation_engine import refresh_anticipations, set_anticipation_status
 
@@ -120,6 +120,42 @@ async def test_overdue_goal_generates_high_priority_insight(db_session):
     assert len(items) == 1
     assert items[0].kind == "goal_overdue"
     assert items[0].priority == "high"
+
+
+@pytest.mark.asyncio
+async def test_open_tasks_generate_due_insights_but_completed_and_cancelled_tasks_do_not(
+    db_session,
+):
+    now = datetime(2026, 11, 6, 10, tzinfo=timezone.utc)
+    db_session.add_all([
+        Task(
+            id="task-soon", user_id="owner-a", title="Prepare review",
+            due_at=now + timedelta(days=2), status="todo",
+        ),
+        Task(
+            id="task-overdue", user_id="owner-a", title="Send report",
+            due_at=now - timedelta(days=1), status="in_progress",
+        ),
+        Task(
+            id="task-complete", user_id="owner-a", title="Already done",
+            due_at=now + timedelta(days=1), status="completed",
+        ),
+        Task(
+            id="task-cancelled", user_id="owner-a", title="Cancelled",
+            due_at=now + timedelta(days=1), status="cancelled",
+        ),
+    ])
+    await db_session.commit()
+
+    items = await refresh_anticipations(db_session, user_id="owner-a", now=now)
+
+    assert {item.source_id for item in items} == {"task-soon", "task-overdue"}
+    by_id = {item.source_id: item for item in items}
+    assert by_id["task-soon"].kind == "task_due_soon"
+    assert by_id["task-soon"].priority == "medium"
+    assert "task-soon" in by_id["task-soon"].evidence_json
+    assert by_id["task-overdue"].kind == "task_overdue"
+    assert by_id["task-overdue"].priority == "high"
 
 
 @pytest.mark.asyncio

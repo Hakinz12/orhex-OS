@@ -49,8 +49,9 @@ export async function proxyMemoryOperation(
   method: "GET" | "POST" | "DELETE",
   responseKind: ResponseKind,
   body?: Record<string, unknown>,
+  query?: { limit?: number },
 ) {
-  const result = await callBackend(path, { token, method, body });
+  const result = await callBackend(path, { token, method, body, query });
   if (result.kind === "unavailable") {
     return jsonError(503, "service_unavailable", "The memory service is temporarily unavailable.");
   }

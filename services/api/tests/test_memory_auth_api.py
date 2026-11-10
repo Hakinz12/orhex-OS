@@ -880,6 +880,32 @@ async def test_soft_delete_is_owned_idempotent_and_does_not_call_walrus(api_harn
 
 
 @pytest.mark.asyncio
+async def test_memory_list_limit_is_owner_scoped_and_bounded(api_harness):
+    _, token = await provision(api_harness)
+    for text in ("First timeline memory.", "Second timeline memory.", "Third timeline memory."):
+        response = await api_harness.client.post(
+            "/api/v1/memory/remember",
+            headers=bearer(token),
+            json={"text": text},
+        )
+        assert response.status_code == 201
+
+    limited = await api_harness.client.get(
+        "/api/v1/memory/records/active?limit=2",
+        headers=bearer(token),
+    )
+    invalid = await api_harness.client.get(
+        "/api/v1/memory/records/active?limit=101",
+        headers=bearer(token),
+    )
+
+    assert limited.status_code == 200
+    assert limited.json()["total"] == 2
+    assert len(limited.json()["memories"]) == 2
+    assert invalid.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_cross_user_cannot_trash_or_restore_memory(api_harness):
     _, owner_token = await provision(api_harness)
     _, other_token = await provision(api_harness)

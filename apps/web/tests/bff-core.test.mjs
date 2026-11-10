@@ -478,6 +478,33 @@ test("local development defaults to loopback FastAPI and validates the expected 
   assert.equal(validated.ok, true);
 });
 
+test("memory record BFF requests support a bounded limit only on the approved list route", async () => {
+  let observedUrl;
+  const response = await callBackend("/api/v1/memory/records/active", {
+    token: validToken,
+    method: "GET",
+    query: { limit: 50 },
+    env: backendEnv,
+    fetchImpl: async (url) => {
+      observedUrl = String(url);
+      return jsonResponse({ folder: "active", total: 0, memories: [] });
+    },
+  });
+  assert.equal(response.kind, "response");
+  assert.equal(observedUrl, `${backendEnv.ORHEX_API_BASE_URL}/api/v1/memory/records/active?limit=50`);
+
+  const rejected = await callBackend("/api/v1/memory/records/active", {
+    token: validToken,
+    method: "GET",
+    query: { limit: 101 },
+    env: backendEnv,
+    fetchImpl: async () => {
+      throw new Error("Invalid memory limits must not reach the backend.");
+    },
+  });
+  assert.deepEqual(rejected, { kind: "rejected" });
+});
+
 test("visitor session validation strips internal user data and never returns credentials", async () => {
   const createdAt = new Date(Date.now() - 60_000).toISOString();
   const credentialCreatedAt = new Date(Date.now() - 30_000).toISOString();

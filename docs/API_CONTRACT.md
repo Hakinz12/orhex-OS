@@ -123,6 +123,8 @@ must not submit an owner ID or namespace.
   Trash or have permanent deletion in progress before returning them.
 - `GET /records/active` and `GET /records/trash` list confirmed memories from
   the corresponding owner-scoped folder.
+- Either list route accepts an optional `limit` from 1 to 100. Without it, the
+  existing full-folder response is preserved.
 - `DELETE /operations/{operation_id}` moves an owned confirmed memory to
   recoverable Trash. It does not delete the Walrus blob.
 - `POST /operations/{operation_id}/restore` restores an owned trashed memory
@@ -406,7 +408,7 @@ headers for the application's CSRF decision.
 ## Anticipation API (implemented)
 
 - `GET /api/v1/anticipation` returns the authenticated user's active anticipation insights.
-- `POST /api/v1/anticipation/refresh` evaluates deterministic goal/commitment deadline rules and returns active insights.
+- `POST /api/v1/anticipation/refresh` evaluates deterministic goal, commitment, and open-task deadline rules and returns active insights.
 - `PATCH /api/v1/anticipation/{insight_id}` accepts `{"status":"active"|"dismissed"}` for an insight owned by the authenticated user.
 - `GET /api/v1/anticipation?include_inactive=true` also includes dismissed and resolved records.
 - The Next.js BFF exposes matching routes under `/api/bff/anticipation`.

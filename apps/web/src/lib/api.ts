@@ -200,8 +200,12 @@ export function reconcileMemoryOperation(operationId: string): Promise<MemoryOpe
   );
 }
 
-export function listMemories(folder: "active" | "trash"): Promise<MemoryFolderResponse> {
-  return requestJson(`/api/bff/memory/records/${folder}`);
+export function listMemories(
+  folder: "active" | "trash",
+  limit?: number,
+): Promise<MemoryFolderResponse> {
+  const query = limit === undefined ? "" : `?limit=${encodeURIComponent(String(limit))}`;
+  return requestJson(`/api/bff/memory/records/${folder}${query}`);
 }
 
 export function trashMemory(operationId: string): Promise<MemoryOperation> {
