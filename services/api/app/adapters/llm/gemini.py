@@ -122,12 +122,7 @@ class GeminiAdapter(BaseLLMAdapter):
     ) -> Dict[str, Any]:
         """Assemble structured prompt and query Gemini."""
         if not self.api_key:
-            return {
-                "answer": "ORHEX OS is awaiting a valid GEMINI_API_KEY. Please configure your key in .env.",
-                "evidence": [],
-                "recommendations": [],
-                "candidate_memories": []
-            }
+            raise GeminiUnavailableError("Gemini credentials are not configured.")
 
         # Context assembly
         memory_str = json.dumps(recalled_memories, indent=2) if recalled_memories else "None"
@@ -161,32 +156,31 @@ class GeminiAdapter(BaseLLMAdapter):
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 res = await client.post(url, json=payload, headers=self._headers())
-                if res.status_code == 200:
-                    data = res.json()
-                    candidates = data.get("candidates", [])
-                    if candidates and "content" in candidates[0]:
-                        raw_text = candidates[0]["content"]["parts"][0]["text"]
-                        try:
-                            parsed = json.loads(raw_text)
-                            return parsed
-                        except json.JSONDecodeError:
-                            return {
-                                "answer": raw_text,
-                                "evidence": [],
-                                "recommendations": []
-                            }
-                return {
-                    "answer": f"Gemini API returned status {res.status_code}.",
-                    "evidence": [],
-                    "recommendations": []
-                }
-        except Exception as e:
-            logger.error("Gemini generate_response error: %s", type(e).__name__)
-            return {
-                "answer": "Error communicating with Gemini.",
-                "evidence": [],
-                "recommendations": []
-            }
+        except httpx.TimeoutException as exc:
+            raise GeminiTimeoutError("Gemini request timed out.") from exc
+        except httpx.HTTPError as exc:
+            logger.warning("Gemini generation request failed: %s", type(exc).__name__)
+            raise GeminiProviderError("Gemini request failed.") from exc
+
+        if res.status_code in {401, 403}:
+            raise GeminiAuthenticationError("Gemini rejected the configured server credentials.")
+        if res.status_code == 404:
+            raise GeminiModelUnavailableError("The configured Gemini model is unavailable.")
+        if res.status_code == 429:
+            raise GeminiRateLimitError("Gemini rate limited the request.")
+        if res.status_code != 200:
+            logger.warning("Gemini generation request failed with HTTP status %d", res.status_code)
+            raise GeminiProviderError("Gemini could not complete the request.")
+
+        try:
+            data = res.json()
+            raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+            parsed = json.loads(raw_text)
+        except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+            raise GeminiResponseError("Gemini returned an invalid structured response.") from exc
+        if not isinstance(parsed, dict):
+            raise GeminiResponseError("Gemini returned an invalid structured response.")
+        return parsed
 
     async def generate_conversation_response(
         self,

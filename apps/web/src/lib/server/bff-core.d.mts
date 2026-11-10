@@ -128,6 +128,13 @@ export function safeErrorResponse(status: number): {
   status: number;
   body: { error: string; message: string };
 };
+export function safeConversationErrorResponse(
+  status: number,
+  backendCode?: string,
+): {
+  status: number;
+  body: { error: string; message: string };
+};
 export function validateSuiWalletAddress(value: unknown): value is string;
 export function parseSuiPagination(searchParams: URLSearchParams): {
   limit?: number;

@@ -269,8 +269,8 @@ async def send_message(
         raise HTTPException(
             status_code=503,
             detail={
-                "code": "assistant_unavailable",
-                "message": "The assistant is not configured right now.",
+                "code": "assistant_not_configured",
+                "message": "The AI provider is not configured. Ask an administrator to configure Gemini.",
             },
         ) from exc
     except GeminiTimeoutError as exc:
@@ -317,8 +317,8 @@ async def send_message(
         raise HTTPException(
             status_code=503,
             detail={
-                "code": "assistant_unavailable",
-                "message": "The assistant is temporarily unavailable. Please retry.",
+                "code": "assistant_provider_unavailable",
+                "message": "Gemini could not complete the request. Check provider connectivity and retry.",
             },
         ) from exc
 

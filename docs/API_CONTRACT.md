@@ -99,9 +99,11 @@ truthful retrieval status (`retrieved`, `empty`, `unavailable`, or
 records, or namespace values. Retrieved text is bounded to five items and 10,000
 characters total. Recall failure does not block conversation generation and
 does not authorize unsupported claims of personal recall.
-Missing Gemini credentials/provider availability return a safe `503`, provider
-timeouts return `504`, and malformed model responses return `502`. Failed
-provider calls do not fabricate or persist assistant replies.
+Missing Gemini credentials return a safe `503` with an `assistant_not_configured`
+category. Provider authentication, model availability, rate limiting, transport
+failure, timeouts, and malformed responses have distinct safe error categories
+(`503`, `429`, `504`, or `502` as appropriate). Failed provider calls do not
+fabricate or persist assistant replies.
 
 The Next.js app uses same-origin `/api/bff/conversations` and
 `/api/bff/conversations/{conversation_id}` routes. Conversation history remains

@@ -11,6 +11,7 @@ import {
   parseSuiPagination,
   safeSuiBackendResponse,
   safeConversation,
+  safeConversationErrorResponse,
   sessionCookieName,
   visitorCookieName,
   validateSuiWalletAddress,
@@ -174,35 +175,12 @@ export async function proxyConversationRequest(
       detail && typeof detail === "object" && "code" in detail
         ? (detail as { code?: unknown }).code
         : null;
-    const providerErrors: Record<string, { error: string; message: string }> = {
-      assistant_provider_auth: {
-        error: "assistant_provider_auth",
-        message: "The AI provider rejected its server credentials. Ask an administrator to check the AI configuration.",
-      },
-      assistant_model_unavailable: {
-        error: "assistant_model_unavailable",
-        message: "The configured AI model is unavailable. Ask an administrator to check the model configuration.",
-      },
-      assistant_provider_rate_limited: {
-        error: "assistant_provider_rate_limited",
-        message: "The AI provider is rate limited. Wait briefly, then retry your message.",
-      },
-    };
-    const errors: Record<number, { error: string; message: string }> = {
-      404: { error: "not_found", message: "The conversation was not found." },
-      409: { error: "conversation_conflict", message: "The conversation changed. Reload it and retry." },
-      422: { error: "invalid_request", message: "The conversation request is invalid." },
-      429: { error: "rate_limited", message: "Too many requests. Please retry shortly." },
-      502: { error: "assistant_error", message: "The assistant returned an unusable response. Please retry." },
-      503: { error: "assistant_unavailable", message: "The assistant is temporarily unavailable." },
-      504: { error: "assistant_timeout", message: "The assistant did not respond in time. Please retry." },
-    };
-    const mapped =
-      (typeof backendCode === "string" ? providerErrors[backendCode] : undefined) ??
-      errors[result.response.status] ??
-      errors[503];
-    return NextResponse.json(mapped, {
-      status: result.response.status in errors ? result.response.status : 503,
+    const mapped = safeConversationErrorResponse(
+      result.response.status,
+      typeof backendCode === "string" ? backendCode : undefined,
+    );
+    return NextResponse.json(mapped.body, {
+      status: mapped.status,
       headers: { "Cache-Control": "no-store" },
     });
   }

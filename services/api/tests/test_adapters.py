@@ -26,19 +26,73 @@ from app.services.wallet_context import WalletContext
 
 @pytest.mark.asyncio
 async def test_gemini_adapter_unconfigured_behavior(monkeypatch):
-    """Verify Gemini adapter handles missing credentials safely without throwing exceptions."""
+    """Missing credentials must not create a success-shaped provider response."""
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "environment-key-is-not-used")
     adapter = GeminiAdapter(api_key="")
     readiness = await adapter.check_readiness()
     assert readiness["status"] == "unconfigured"
     assert "GEMINI_API_KEY" in readiness["message"]
 
-    res = await adapter.generate_response(
-        system_prompt="Test",
-        user_message="Hello",
-        recalled_memories=[]
+    with pytest.raises(GeminiUnavailableError):
+        await adapter.generate_response(
+            system_prompt="Test",
+            user_message="Hello",
+            recalled_memories=[],
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "error"),
+    [
+        (401, GeminiAuthenticationError),
+        (404, GeminiModelUnavailableError),
+        (429, GeminiRateLimitError),
+        (503, GeminiProviderError),
+    ],
+)
+async def test_gemini_generation_surfaces_provider_status_without_fallback(
+    monkeypatch, status, error
+):
+    client_factory = httpx.AsyncClient
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(status, json={"provider_error": "private"})
     )
-    assert "GEMINI_API_KEY" in res["answer"]
+    monkeypatch.setattr(
+        "app.adapters.llm.gemini.httpx.AsyncClient",
+        lambda **kwargs: client_factory(transport=transport, **kwargs),
+    )
+    adapter = GeminiAdapter(api_key="unit-test-gemini-key")
+
+    with pytest.raises(error):
+        await adapter.generate_response(
+            system_prompt="Test",
+            user_message="Hello",
+            recalled_memories=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_gemini_generation_rejects_malformed_response_without_fallback(monkeypatch):
+    client_factory = httpx.AsyncClient
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": "not-json"}]}}]},
+        )
+    )
+    monkeypatch.setattr(
+        "app.adapters.llm.gemini.httpx.AsyncClient",
+        lambda **kwargs: client_factory(transport=transport, **kwargs),
+    )
+    adapter = GeminiAdapter(api_key="unit-test-gemini-key")
+
+    with pytest.raises(GeminiResponseError):
+        await adapter.generate_response(
+            system_prompt="Test",
+            user_message="Hello",
+            recalled_memories=[],
+        )
 
 
 @pytest.mark.asyncio

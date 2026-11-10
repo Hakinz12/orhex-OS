@@ -30,6 +30,7 @@ import {
   validateRecallBody,
   validateConversationRequest,
   safeConversation,
+  safeConversationErrorResponse,
   validateRememberBody,
 } from "../src/lib/server/bff-core.mjs";
 
@@ -503,6 +504,34 @@ test("memory record BFF requests support a bounded limit only on the approved li
     },
   });
   assert.deepEqual(rejected, { kind: "rejected" });
+});
+
+test("conversation BFF errors preserve actionable provider categories without upstream details", () => {
+  assert.deepEqual(safeConversationErrorResponse(503, "assistant_not_configured"), {
+    status: 503,
+    body: {
+      error: "assistant_not_configured",
+      message: "The AI provider is not configured. Ask an administrator to configure Gemini.",
+    },
+  });
+  assert.deepEqual(safeConversationErrorResponse(503, "assistant_provider_unavailable"), {
+    status: 503,
+    body: {
+      error: "assistant_provider_unavailable",
+      message: "Gemini could not complete the request. Check provider connectivity and retry.",
+    },
+  });
+  assert.deepEqual(safeConversationErrorResponse(504), {
+    status: 504,
+    body: {
+      error: "assistant_timeout",
+      message: "The assistant did not respond in time. Please retry.",
+    },
+  });
+  assert.deepEqual(safeConversationErrorResponse(503, "secret-upstream-detail").body, {
+    error: "assistant_unavailable",
+    message: "The assistant is temporarily unavailable.",
+  });
 });
 
 test("visitor session validation strips internal user data and never returns credentials", async () => {

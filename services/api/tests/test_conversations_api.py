@@ -480,18 +480,18 @@ async def test_conversation_rejects_oversized_and_client_owned_fields(chat_harne
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("failure", "status"),
+    ("failure", "status", "code"),
     [
-        (GeminiUnavailableError("private internal detail"), 503),
-        (GeminiTimeoutError("private internal detail"), 504),
-        (GeminiProviderError("private internal detail"), 503),
-        (GeminiAuthenticationError("private internal detail"), 503),
-        (GeminiModelUnavailableError("private internal detail"), 503),
-        (GeminiRateLimitError("private internal detail"), 429),
-        (GeminiResponseError("private internal detail"), 502),
+        (GeminiUnavailableError("private internal detail"), 503, "assistant_not_configured"),
+        (GeminiTimeoutError("private internal detail"), 504, "assistant_timeout"),
+        (GeminiProviderError("private internal detail"), 503, "assistant_provider_unavailable"),
+        (GeminiAuthenticationError("private internal detail"), 503, "assistant_provider_auth"),
+        (GeminiModelUnavailableError("private internal detail"), 503, "assistant_model_unavailable"),
+        (GeminiRateLimitError("private internal detail"), 429, "assistant_provider_rate_limited"),
+        (GeminiResponseError("private internal detail"), 502, "invalid_assistant_response"),
     ],
 )
-async def test_provider_failures_are_safe_and_not_persisted(chat_harness, failure, status):
+async def test_provider_failures_are_safe_and_not_persisted(chat_harness, failure, status, code):
     visitor = await provision_visitor(chat_harness)
     chat_harness.gemini.failure = failure
     response = await chat_harness.client.post(
@@ -502,6 +502,7 @@ async def test_provider_failures_are_safe_and_not_persisted(chat_harness, failur
 
     assert response.status_code == status
     assert "private internal detail" not in response.text
+    assert response.json()["error"] == code
     async with chat_harness.factory() as session:
         assert await session.scalar(select(func.count(Conversation.id))) == 0
         assert await session.scalar(select(func.count(ConversationMessage.id))) == 0

@@ -569,6 +569,47 @@ export function safeErrorResponse(status) {
   return { status: 503, body: { error: "service_unavailable", message: "The memory service is temporarily unavailable." } };
 }
 
+export function safeConversationErrorResponse(status, backendCode) {
+  const providerErrors = {
+    assistant_not_configured: {
+      error: "assistant_not_configured",
+      message: "The AI provider is not configured. Ask an administrator to configure Gemini.",
+    },
+    assistant_provider_unavailable: {
+      error: "assistant_provider_unavailable",
+      message: "Gemini could not complete the request. Check provider connectivity and retry.",
+    },
+    assistant_provider_auth: {
+      error: "assistant_provider_auth",
+      message: "The AI provider rejected its server credentials. Ask an administrator to check the AI configuration.",
+    },
+    assistant_model_unavailable: {
+      error: "assistant_model_unavailable",
+      message: "The configured AI model is unavailable. Ask an administrator to check the model configuration.",
+    },
+    assistant_provider_rate_limited: {
+      error: "assistant_provider_rate_limited",
+      message: "The AI provider is rate limited. Wait briefly, then retry your message.",
+    },
+  };
+  const providerError = typeof backendCode === "string" ? providerErrors[backendCode] : undefined;
+  if (providerError) return { status, body: providerError };
+
+  const errors = {
+    404: { error: "not_found", message: "The conversation was not found." },
+    409: { error: "conversation_conflict", message: "The conversation changed. Reload it and retry." },
+    422: { error: "invalid_request", message: "The conversation request is invalid." },
+    429: { error: "rate_limited", message: "Too many requests. Please retry shortly." },
+    502: { error: "assistant_error", message: "The assistant returned an unusable response. Please retry." },
+    503: { error: "assistant_unavailable", message: "The assistant is temporarily unavailable." },
+    504: { error: "assistant_timeout", message: "The assistant did not respond in time. Please retry." },
+  };
+  return {
+    status: Object.hasOwn(errors, status) ? status : 503,
+    body: errors[status] ?? errors[503],
+  };
+}
+
 function isSuiAddress(value) {
   return typeof value === "string" && /^0x[0-9a-fA-F]{1,64}$/.test(value);
 }
