@@ -71,6 +71,7 @@ export function callBackend(
     body?: Record<string, unknown>;
     query?: { limit?: number; cursor?: string };
     origin?: string;
+    correlationId?: string;
     env?: NodeJS.ProcessEnv;
     fetchImpl?: typeof fetch;
   },

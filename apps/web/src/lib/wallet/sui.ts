@@ -15,6 +15,8 @@ import type {
   WalletConnectionAdapter,
   WalletConnectionStatus,
   WalletConnectionViewModel,
+  SignedPersonalMessage,
+  WalletDiagnosticEvent,
 } from "./types";
 
 const SUI_CHAIN_IDS = new Set([SUI_MAINNET_CHAIN, SUI_TESTNET_CHAIN, SUI_DEVNET_CHAIN]);
@@ -41,7 +43,58 @@ interface SignPersonalMessageFeature {
     account: WalletAccount;
     message: Uint8Array;
     chain: string;
-  }): Promise<{ signature: string }>;
+  }): Promise<{ bytes: string; signature: string }>;
+}
+
+function decodeBase64(value: string): Uint8Array {
+  if (
+    !value ||
+    value.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
+  ) {
+    throw new Error("The wallet returned an invalid personal-message response.");
+  }
+  const decoded = atob(value);
+  return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function reportDiagnostic(
+  onDiagnostic: ((event: WalletDiagnosticEvent) => void) | undefined,
+  event: WalletDiagnosticEvent,
+): void {
+  try {
+    onDiagnostic?.(event);
+  } catch {
+    // Diagnostics must not change wallet signing behavior.
+  }
+}
+
+function exceptionClass(reason: unknown): string {
+  try {
+    const name = reason instanceof Error ? reason.name : "UnknownError";
+    return /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(name) ? name : "UnknownError";
+  } catch {
+    return "UnknownError";
+  }
+}
+
+function safeWalletName(wallet: Wallet): string {
+  try {
+    const name = wallet.name;
+    if (typeof name !== "string") return "Unknown wallet";
+    const sanitized = name
+      .replace(/[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}]/gu, "")
+      .replace(/\s+/gu, " ")
+      .trim()
+      .slice(0, 80);
+    return sanitized || "Unknown wallet";
+  } catch {
+    return "Unknown wallet";
+  }
 }
 
 function isWallet(value: unknown): value is Wallet {
@@ -306,7 +359,10 @@ export function createSuiWalletAdapter(
     emit();
   };
 
-  const signPersonalMessage = async (message: Uint8Array): Promise<string> => {
+  const signPersonalMessage = async (
+    message: Uint8Array,
+    onDiagnostic?: (event: WalletDiagnosticEvent) => void,
+  ): Promise<SignedPersonalMessage> => {
     if (!account || !selectedWallet || status !== "connected") {
       throw new Error("Connect a Sui wallet before verifying ownership.");
     }
@@ -322,15 +378,121 @@ export function createSuiWalletAdapter(
     if (!activeAccount) {
       throw new Error("The connected wallet account changed. Reconnect and try again.");
     }
-    const signed = await feature.signPersonalMessage({
-      account: activeAccount,
-      message,
-      chain: account.chainId,
+    const walletName = safeWalletName(selectedWallet);
+    reportDiagnostic(onDiagnostic, {
+      stage: "signing_started",
+      wallet_name: walletName,
+      signing_attempted: true,
     });
-    if (!signed || typeof signed.signature !== "string" || !signed.signature) {
-      throw new Error("The wallet did not return a personal-message signature.");
+    let signed: { bytes: string; signature: string };
+    try {
+      signed = await feature.signPersonalMessage({
+        account: activeAccount,
+        message,
+        chain: account.chainId,
+      });
+    } catch (reason) {
+      reportDiagnostic(onDiagnostic, {
+        stage: "signing_rejected",
+        exception_class: exceptionClass(reason),
+      });
+      throw reason;
     }
-    return signed.signature;
+    if (!signed) {
+      reportDiagnostic(onDiagnostic, {
+        stage: "signing_resolved",
+        wallet_name: walletName,
+        bytes_present: false,
+        signature_present: false,
+      });
+      reportDiagnostic(onDiagnostic, {
+        stage: "signature_response_invalid",
+        reason: "fields_missing_or_invalid",
+        bytes_present: false,
+        signature_present: false,
+      });
+      throw new Error("The wallet returned an incomplete personal-message signature.");
+    }
+    const signedSignature = signed.signature;
+    if (typeof signedSignature !== "string") {
+      reportDiagnostic(onDiagnostic, {
+        stage: "signing_resolved",
+        wallet_name: walletName,
+        signature_present: false,
+      });
+      reportDiagnostic(onDiagnostic, {
+        stage: "signature_response_invalid",
+        reason: "fields_missing_or_invalid",
+        signature_present: false,
+      });
+      throw new Error("The wallet returned an incomplete personal-message signature.");
+    }
+    const signedBytesValue = signed.bytes;
+    reportDiagnostic(onDiagnostic, {
+      stage: "signing_resolved",
+      wallet_name: walletName,
+      bytes_present: typeof signedBytesValue === "string",
+      signature_present: true,
+    });
+    if (typeof signedBytesValue !== "string") {
+      reportDiagnostic(onDiagnostic, {
+        stage: "signature_response_invalid",
+        reason: "fields_missing_or_invalid",
+        bytes_present: false,
+        signature_present: true,
+      });
+      throw new Error("The wallet returned an incomplete personal-message signature.");
+    }
+    let signedBytes: Uint8Array;
+    let bytesBase64Valid = true;
+    let signatureBase64Valid = true;
+    try {
+      signedBytes = decodeBase64(signedBytesValue);
+    } catch {
+      bytesBase64Valid = false;
+      signedBytes = new Uint8Array();
+    }
+    try {
+      decodeBase64(signedSignature);
+    } catch {
+      signatureBase64Valid = false;
+    }
+    if (!bytesBase64Valid || !signatureBase64Valid) {
+      reportDiagnostic(onDiagnostic, {
+        stage: "signature_response_invalid",
+        reason: "base64_invalid",
+        bytes_present: true,
+        signature_present: true,
+        bytes_base64_valid: bytesBase64Valid,
+        signature_base64_valid: signatureBase64Valid,
+      });
+      throw new Error("The wallet returned an invalid personal-message signature.");
+    }
+    reportDiagnostic(onDiagnostic, {
+      stage: "signature_response_validated",
+      bytes_present: true,
+      signature_present: true,
+      bytes_base64_valid: true,
+      signature_base64_valid: true,
+    });
+    const signedMessageMatches = sameBytes(signedBytes, message);
+    reportDiagnostic(onDiagnostic, {
+      stage: "signed_message_matches",
+      signed_message_matches: signedMessageMatches,
+    });
+    if (!signedMessageMatches) {
+      reportDiagnostic(onDiagnostic, {
+        stage: "signature_response_invalid",
+        reason: "signed_message_mismatch",
+        bytes_present: true,
+        signature_present: true,
+        bytes_base64_valid: true,
+        signature_base64_valid: true,
+        signed_message_matches: false,
+      });
+      throw new Error("The wallet signed a different message than the verification challenge.");
+    }
+    return { bytes: signedBytesValue, signature: signedSignature };
   };
 
   const onAccountChange = (listener: (value: WalletAccountRecord | null) => void) => {

@@ -9,6 +9,7 @@ import ts from "typescript";
 import {
   SUI_MAINNET_CHAIN,
   SUI_TESTNET_CHAIN,
+  SuiSignPersonalMessage,
   StandardConnect,
   StandardEvents,
 } from "@mysten/wallet-standard";
@@ -82,6 +83,7 @@ function createWallet({
   accounts = [],
   connect = async () => ({ accounts }),
   disconnect = async () => {},
+  signPersonalMessage,
 } = {}) {
   const eventListeners = new Set();
   let eventUnsubscriptions = 0;
@@ -103,6 +105,9 @@ function createWallet({
           };
         },
       },
+      ...(signPersonalMessage
+        ? { [SuiSignPersonalMessage]: { version: "1.1.0", signPersonalMessage } }
+        : {}),
     },
     emitChange() {
       for (const listener of eventListeners) listener({ accounts: wallet.accounts });
@@ -149,6 +154,262 @@ test("connects to a Sui account and exposes live adapter state", async () => {
   assert.deepEqual(receivedOptions, { silent: false });
   assert.equal(adapter.connected, true);
   stop();
+});
+
+test("signs the exact challenge bytes using the Wallet Standard account and chain", async () => {
+  const account = createAccount("0xsigner");
+  const message = new Uint8Array([0, 1, 2, 255]);
+  let received;
+  const wallet = createWallet({
+    accounts: [account],
+    signPersonalMessage: async (input) => {
+      received = input;
+      return {
+        bytes: btoa(String.fromCharCode(...input.message)),
+        signature: btoa("serialized-sui-signature"),
+      };
+    },
+  });
+  const adapter = createSuiWalletAdapter({ registry: createRegistry([wallet]).api });
+
+  await adapter.connect();
+  assert.deepEqual(await adapter.signPersonalMessage(message), {
+    bytes: btoa(String.fromCharCode(...message)),
+    signature: btoa("serialized-sui-signature"),
+  });
+  assert.equal(received.account, account);
+  assert.equal(received.chain, SUI_MAINNET_CHAIN);
+  assert.deepEqual([...received.message], [...message]);
+});
+
+test("diagnoses signing resolution without exposing response values", async () => {
+  const message = new Uint8Array([0, 1, 2, 255]);
+  const signature = btoa("private-signature-value");
+  const wallet = createWallet({
+    name: "Diagnostic Mock Wallet",
+    accounts: [createAccount("0xsigner")],
+    signPersonalMessage: async () => ({
+      bytes: btoa(String.fromCharCode(...message)),
+      signature,
+    }),
+  });
+  const adapter = createSuiWalletAdapter({ registry: createRegistry([wallet]).api });
+  const diagnostics = [];
+  await adapter.connect();
+
+  await adapter.signPersonalMessage(message, (event) => diagnostics.push(event));
+
+  assert.deepEqual(diagnostics.map(({ stage }) => stage), [
+    "signing_started",
+    "signing_resolved",
+    "signature_response_validated",
+    "signed_message_matches",
+  ]);
+  assert.equal(diagnostics[0].wallet_name, "Diagnostic Mock Wallet");
+  assert.equal(diagnostics[1].bytes_present, true);
+  assert.equal(diagnostics[1].signature_present, true);
+  assert.equal(diagnostics[2].bytes_base64_valid, true);
+  assert.equal(diagnostics[2].signature_base64_valid, true);
+  assert.equal(diagnostics[3].signed_message_matches, true);
+  const serialized = JSON.stringify(diagnostics);
+  assert.equal(serialized.includes(signature), false);
+  assert.equal(serialized.includes(btoa(String.fromCharCode(...message))), false);
+  assert.equal(serialized.includes(String.fromCharCode(...message)), false);
+  const signedWithBrokenDiagnostic = await adapter.signPersonalMessage(message, () => {
+    throw new Error("diagnostic sink failed");
+  });
+  assert.equal(signedWithBrokenDiagnostic.signature, signature);
+});
+
+test("reads getter-backed signing response fields once for validation and diagnostics", async () => {
+  const message = new Uint8Array([5, 6, 7]);
+  const values = {
+    bytes: btoa(String.fromCharCode(...message)),
+    signature: btoa("serialized-signature"),
+  };
+  const reads = { bytes: 0, signature: 0 };
+  const wallet = createWallet({
+    accounts: [createAccount("0xsigner")],
+    signPersonalMessage: async () => ({
+      get bytes() {
+        reads.bytes += 1;
+        return values.bytes;
+      },
+      get signature() {
+        reads.signature += 1;
+        return values.signature;
+      },
+    }),
+  });
+  const adapter = createSuiWalletAdapter({ registry: createRegistry([wallet]).api });
+  const diagnostics = [];
+  await adapter.connect();
+
+  const signed = await adapter.signPersonalMessage(message, (event) => diagnostics.push(event));
+
+  assert.deepEqual(reads, { bytes: 1, signature: 1 });
+  assert.deepEqual(signed, values);
+  assert.equal(diagnostics[1].bytes_present, true);
+  assert.equal(diagnostics[1].signature_present, true);
+  assert.equal(JSON.stringify(diagnostics).includes(values.bytes), false);
+  assert.equal(JSON.stringify(diagnostics).includes(values.signature), false);
+});
+
+test("sanitizes and bounds the wallet name with one metadata read per signing attempt", async (t) => {
+  const cases = [
+    ["ordinary name", "Slush Wallet", "Slush Wallet"],
+    ["controls and formatting", " \u0000\u202eWallet\u200b\nName ", "WalletName"],
+    ["long name", "A".repeat(120), "A".repeat(80)],
+    ["empty name", " \u200b\n", "Unknown wallet"],
+  ];
+
+  for (const [label, name, expected] of cases) {
+    await t.test(label, async () => {
+      let nameReads = 0;
+      const wallet = createWallet({
+        accounts: [createAccount("0xsigner")],
+        signPersonalMessage: async (input) => ({
+          bytes: btoa(String.fromCharCode(...input.message)),
+          signature: btoa("signature"),
+        }),
+      });
+      Object.defineProperty(wallet, "name", {
+        configurable: true,
+        get() {
+          nameReads += 1;
+          return name;
+        },
+      });
+      const adapter = createSuiWalletAdapter({ registry: createRegistry([wallet]).api });
+      await adapter.connect();
+      nameReads = 0;
+      const diagnostics = [];
+
+      await adapter.signPersonalMessage(new Uint8Array([1]), (event) => diagnostics.push(event));
+
+      assert.equal(nameReads, 1);
+      assert.equal(diagnostics[0].wallet_name, expected);
+      assert.equal(diagnostics[1].wallet_name, expected);
+      assert.equal(/[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}]/u.test(expected), false);
+      assert.equal(expected.length <= 80, true);
+    });
+  }
+});
+
+test("uses a safe fallback when wallet-name metadata is invalid", async () => {
+  let invalidName = false;
+  const wallet = createWallet({
+    accounts: [createAccount("0xsigner")],
+    signPersonalMessage: async (input) => ({
+      bytes: btoa(String.fromCharCode(...input.message)),
+      signature: btoa("signature"),
+    }),
+  });
+  Object.defineProperty(wallet, "name", {
+    configurable: true,
+    get() {
+      return invalidName ? 42 : "Mock Sui Wallet";
+    },
+  });
+  const adapter = createSuiWalletAdapter({ registry: createRegistry([wallet]).api });
+  await adapter.connect();
+  invalidName = true;
+  const diagnostics = [];
+
+  await adapter.signPersonalMessage(new Uint8Array([1]), (event) => diagnostics.push(event));
+
+  assert.equal(diagnostics[0].wallet_name, "Unknown wallet");
+  assert.equal(diagnostics[1].wallet_name, "Unknown wallet");
+});
+
+test("wallet response getter errors retain their original validation error", async () => {
+  const getterError = new Error("wallet response getter failed");
+  const wallet = createWallet({
+    accounts: [createAccount("0xsigner")],
+    signPersonalMessage: async () => ({
+      get signature() {
+        throw getterError;
+      },
+      get bytes() {
+        return btoa("message");
+      },
+    }),
+  });
+  const adapter = createSuiWalletAdapter({ registry: createRegistry([wallet]).api });
+  const diagnostics = [];
+  await adapter.connect();
+
+  await assert.rejects(
+    adapter.signPersonalMessage(new Uint8Array([1]), (event) => diagnostics.push(event)),
+    (error) => error === getterError,
+  );
+  assert.deepEqual(diagnostics.map(({ stage }) => stage), ["signing_started"]);
+});
+
+test("rejects malformed or mismatched Wallet Standard signing responses", async (t) => {
+  const message = new Uint8Array([1, 2, 3]);
+  for (const [name, response, expectedError] of [
+    ["mismatched bytes", { bytes: btoa("other"), signature: btoa("signature") }, /different message/],
+    ["invalid bytes", { bytes: "!", signature: btoa("signature") }, /invalid personal-message signature/],
+    ["invalid signature", { bytes: btoa(String.fromCharCode(1, 2, 3)), signature: "!" }, /invalid personal-message signature/],
+    ["missing bytes", { signature: btoa("signature") }, /incomplete personal-message signature/],
+  ]) {
+    await t.test(name, async () => {
+      const diagnostics = [];
+      const wallet = createWallet({
+        accounts: [createAccount("0xsigner")],
+        signPersonalMessage: async () => response,
+      });
+      const adapter = createSuiWalletAdapter({ registry: createRegistry([wallet]).api });
+      await adapter.connect();
+      await assert.rejects(
+        adapter.signPersonalMessage(message, (event) => diagnostics.push(event)),
+        expectedError,
+      );
+      const invalid = diagnostics.find(({ stage }) => stage === "signature_response_invalid");
+      assert.ok(invalid);
+      assert.equal(JSON.stringify(diagnostics).includes(btoa("signature")), false);
+      if (name === "mismatched bytes") {
+        assert.equal(invalid.reason, "signed_message_mismatch");
+        assert.equal(invalid.signed_message_matches, false);
+      }
+      if (name === "invalid bytes") {
+        assert.equal(invalid.reason, "base64_invalid");
+        assert.equal(invalid.bytes_base64_valid, false);
+      }
+      if (name === "invalid signature") {
+        assert.equal(invalid.reason, "base64_invalid");
+        assert.equal(invalid.signature_base64_valid, false);
+      }
+      if (name === "missing bytes") {
+        assert.equal(invalid.reason, "fields_missing_or_invalid");
+        assert.equal(invalid.bytes_present, false);
+      }
+    });
+  }
+});
+
+test("propagates wallet signature rejection without returning a signature", async () => {
+  const diagnostics = [];
+  const secretErrorText = "wallet exception containing sensitive context";
+  const wallet = createWallet({
+    accounts: [createAccount("0xsigner")],
+    signPersonalMessage: async () => {
+      throw new Error(secretErrorText);
+    },
+  });
+  const adapter = createSuiWalletAdapter({ registry: createRegistry([wallet]).api });
+  await adapter.connect();
+
+  await assert.rejects(
+    adapter.signPersonalMessage(new Uint8Array([1, 2, 3]), (event) => diagnostics.push(event)),
+    new RegExp(secretErrorText),
+  );
+  assert.deepEqual(diagnostics, [
+    { stage: "signing_started", wallet_name: "Mock Sui Wallet", signing_attempted: true },
+    { stage: "signing_rejected", exception_class: "Error" },
+  ]);
+  assert.equal(JSON.stringify(diagnostics).includes(secretErrorText), false);
 });
 
 test("reports user rejection without retaining an account", async () => {
@@ -302,6 +563,20 @@ test("wallet provider is rooted under session context and verification is addres
     walletStateSource,
     /adapter\.onAccountChange\(\(\) => \{[\s\S]*?setVerification\(null\);/,
   );
+  assert.match(walletStateSource, /await adapter\.connect\(\{ silent: false \}\);[\s\S]*?completeWalletVerification/);
+  assert.match(walletStateSource, /const exposedAddress = verified \? wallet\.address : null;/);
+  assert.match(walletStateSource, /const exposedStatus = verified\s*\? "connected"/);
+  assert.doesNotMatch(walletStateSource, /\bverify:\s*verify\b/);
+});
+
+test("wallet panel has one atomic connect action and no unverified connected state", async () => {
+  const panelSource = await readFile(
+    path.resolve("src/components/wallet-connection.tsx"),
+    "utf8",
+  );
+  assert.match(panelSource, /onClick=\{\(\) => void runWalletAction\(connect\)\}/);
+  assert.doesNotMatch(panelSource, />Verify Wallet</);
+  assert.doesNotMatch(panelSource, /connection alone does not verify ownership/i);
 });
 
 test("ignores wallets that do not support Sui", async () => {

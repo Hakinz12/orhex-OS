@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { BadgeCheck, LoaderCircle, LogOut, ShieldAlert, Wallet2 } from "lucide-react";
+import { BadgeCheck, LoaderCircle, LogOut, Wallet2 } from "lucide-react";
 
 import { useWalletConnection } from "@/lib/wallet/state";
 
@@ -12,20 +12,26 @@ export function WalletConnectionPanel() {
     shortAddress,
     network,
     error,
-    verified,
     verificationAvailable,
     verificationLoading,
     verificationBusy,
     verificationError,
+    connectionPhase,
     connect,
     disconnect,
-    verify,
   } = useWalletConnection();
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const actionInFlight = useRef(false);
   const connected = status === "connected" && !!address;
-  const pending = status === "connecting" || verificationLoading;
+  const pending = verificationBusy || verificationLoading;
+  const progressLabel = verificationLoading && !verificationBusy
+    ? "Checking wallet status…"
+    : connectionPhase === "awaiting_approval"
+      ? "Awaiting wallet approval…"
+      : connectionPhase === "verifying"
+        ? "Verifying ownership…"
+        : "Connecting…";
 
   async function runWalletAction(action: () => Promise<void>) {
     if (actionInFlight.current) return;
@@ -49,17 +55,7 @@ export function WalletConnectionPanel() {
   return (
     <div className="flex min-w-0 flex-col items-start gap-1.5 sm:items-end">
       <div className="flex max-w-full flex-wrap items-center justify-start gap-2 sm:justify-end">
-        {!connected ? (
-          <button
-            type="button"
-            className="primary-button min-h-10"
-            onClick={() => void runWalletAction(connect)}
-            disabled={pending || actionBusy}
-          >
-            {pending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Wallet2 className="h-4 w-4" />}
-            {status === "connecting" || actionBusy ? "Connecting…" : "Connect Wallet"}
-          </button>
-        ) : verified ? (
+        {connected ? (
           <div
             className="inline-flex min-h-10 max-w-full items-center gap-2 rounded-xl border border-[#355244] bg-[#14231d] px-3 py-2 text-left"
             aria-label={`Wallet ${shortAddress} authenticated`}
@@ -74,16 +70,12 @@ export function WalletConnectionPanel() {
           <button
             type="button"
             className="primary-button min-h-10"
-            onClick={() => void runWalletAction(verify)}
-            disabled={verificationBusy || actionBusy || verificationLoading || !verificationAvailable}
-            title={!verificationAvailable ? "Wallet verification requires an active visitor session." : undefined}
+            onClick={() => void runWalletAction(connect)}
+            disabled={pending || actionBusy || !verificationAvailable}
+            title={!verificationAvailable ? "Wallet connection requires an active visitor session." : undefined}
           >
-            {verificationBusy || actionBusy ? (
-              <LoaderCircle className="h-4 w-4 animate-spin" />
-            ) : (
-              <ShieldAlert className="h-4 w-4" />
-            )}
-            {verificationBusy || actionBusy ? "Verifying…" : "Verify Wallet"}
+            {pending || actionBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Wallet2 className="h-4 w-4" />}
+            {pending || actionBusy ? progressLabel : "Connect Wallet"}
           </button>
         )}
         {connected && (
@@ -100,10 +92,14 @@ export function WalletConnectionPanel() {
           </button>
         )}
       </div>
-      {connected && !verified && (
-        <p className="max-w-[280px] text-[10px] leading-4 text-[#8998a7] sm:text-right">
-          Connected as {shortAddress}; connection alone does not verify ownership.
-          {!verificationAvailable && " An active visitor session is required to verify."}
+      {!connected && pending && (
+        <p role="status" className="max-w-[280px] text-[10px] leading-4 text-[#aab8c5] sm:text-right">
+          {progressLabel}
+        </p>
+      )}
+      {!connected && connectionPhase === "failed" && (
+        <p role="status" className="max-w-[280px] text-[10px] leading-4 text-[#e2a8a4] sm:text-right">
+          Connection failed.
         </p>
       )}
       {(actionError || verificationError || error) && (

@@ -16,13 +16,21 @@ import {
   ApiError,
   getVerifiedWallet,
   requestWalletVerificationChallenge,
+  revokeVerifiedWallet,
   submitWalletVerification,
 } from "@/lib/api";
-import type { VerifiedWalletStatus, WalletVerificationChallenge } from "@/lib/types";
+import type { VerifiedWalletStatus } from "@/lib/types";
 import { createSuiWalletAdapter } from "./sui";
+import {
+  completeWalletVerification,
+  completeWalletConnectionForCurrentAttempt,
+  completeWalletDisconnectForCurrentAttempt,
+  runWalletVerificationAttempt,
+} from "./verification-flow.mjs";
 import type {
   WalletConnectionAdapter,
   WalletConnectionViewModel,
+  WalletDiagnosticEvent,
 } from "./types";
 
 type WalletConnectionState = WalletConnectionViewModel & {
@@ -33,10 +41,17 @@ type WalletConnectionState = WalletConnectionViewModel & {
   verificationLoading: boolean;
   verificationBusy: boolean;
   verificationError: string | null;
+  connectionPhase: WalletConnectionPhase;
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
-  verify: () => Promise<void>;
 };
+
+export type WalletConnectionPhase =
+  | "idle"
+  | "connecting"
+  | "awaiting_approval"
+  | "verifying"
+  | "failed";
 
 const WalletConnectionContext = createContext<WalletConnectionState | null>(null);
 
@@ -60,22 +75,12 @@ function useAdapterState(instance: WalletConnectionAdapter) {
     };
   }, [instance]);
 
-  const connect = useCallback(async () => {
-    await instance.connect({ silent: false });
-    setViewModel(instance.getViewModel());
-  }, [instance]);
-
-  const disconnect = useCallback(async () => {
-    await instance.disconnect();
-    setViewModel(instance.getViewModel());
-  }, [instance]);
-
   const signPersonalMessage = useCallback(
     (message: Uint8Array) => instance.signPersonalMessage(message),
     [instance],
   );
 
-  return { ...viewModel, connect, disconnect, signPersonalMessage };
+  return { ...viewModel, signPersonalMessage };
 }
 
 function canonicalWalletAddress(value: string | undefined | null): string | null {
@@ -94,6 +99,20 @@ function verificationErrorMessage(reason: unknown): string {
   return "Wallet ownership could not be verified. Please retry.";
 }
 
+function reportWalletDiagnostic(
+  correlationId: string,
+  event: WalletDiagnosticEvent,
+): void {
+  try {
+    console.info("ORHEX wallet verification", {
+      ...event,
+      correlationId,
+    });
+  } catch {
+    // Diagnostics must not change wallet verification behavior.
+  }
+}
+
 export function WalletConnectionProvider({ children }: { children: ReactNode }) {
   const { session } = useSession();
   const [adapter] = useState(() => createSuiWalletAdapter());
@@ -102,9 +121,12 @@ export function WalletConnectionProvider({ children }: { children: ReactNode }) 
   const [verificationLoading, setVerificationLoading] = useState(true);
   const [verificationBusy, setVerificationBusy] = useState(false);
   const [verificationError, setVerificationError] = useState<string | null>(null);
+  const [connectionPhase, setConnectionPhase] = useState<WalletConnectionPhase>("idle");
   const verificationRequest = useRef(0);
   const verificationInFlight = useRef(false);
   const verificationAttempt = useRef(0);
+  const connectionStarting = useRef(false);
+  const intentionalDisconnect = useRef(false);
   const initialWallet = adapter.getViewModel();
   const activeWalletIdentity = useRef(walletIdentity(initialWallet));
   const visitorIdentityId =
@@ -118,12 +140,25 @@ export function WalletConnectionProvider({ children }: { children: ReactNode }) 
       return adapter.onAccountChange(() => {
         const nextIdentity = walletIdentity(adapter.getViewModel());
         if (nextIdentity === activeWalletIdentity.current) return;
+        const previousIdentity = activeWalletIdentity.current;
         activeWalletIdentity.current = nextIdentity;
+        if (intentionalDisconnect.current) return;
+        if (connectionStarting.current && !previousIdentity && nextIdentity) return;
+        verificationRequest.current += 1;
+        const wasVerifying = verificationInFlight.current;
         verificationAttempt.current += 1;
         verificationInFlight.current = false;
         setVerification(null);
         setVerificationBusy(false);
-        setVerificationError(null);
+        setConnectionPhase(wasVerifying ? "failed" : "idle");
+        setVerificationError(
+          wasVerifying ? "The wallet account changed during verification. Connect again to retry." : null,
+        );
+        if (!intentionalDisconnect.current && previousIdentity && previousIdentity !== nextIdentity) {
+          void revokeVerifiedWallet().catch(() => {
+            setVerificationError("The previous wallet link could not be revoked. Retry disconnecting before reconnecting.");
+          });
+        }
       });
     },
     [adapter],
@@ -167,82 +202,158 @@ export function WalletConnectionProvider({ children }: { children: ReactNode }) 
     };
   }, [session.status, visitorIdentityId]);
 
-  const verify = useCallback(async () => {
-    if (verificationInFlight.current) return;
-    if (wallet.status !== "connected" || !wallet.address) {
-      setVerificationError("Connect a Sui wallet before verifying ownership.");
-      return;
-    }
+  const connect = useCallback(async () => {
     if (!visitorIdentityId) {
       setVerificationError("Wallet ownership verification requires an active visitor session.");
-      return;
+      throw new Error("Wallet ownership verification requires an active visitor session.");
     }
 
-    verificationInFlight.current = true;
-    const attempt = ++verificationAttempt.current;
-    const expectedAddress = canonicalWalletAddress(wallet.address);
-    const expectedNetwork = wallet.network;
-    setVerificationBusy(true);
-    setVerificationError(null);
-    const isCurrentWallet = () => {
-      const current = adapter.getViewModel();
-      return (
-        verificationAttempt.current === attempt &&
-        current.status === "connected" &&
-        current.network === expectedNetwork &&
-        canonicalWalletAddress(current.address) === expectedAddress
-      );
-    };
-    try {
-      const challenge: WalletVerificationChallenge =
-        await requestWalletVerificationChallenge({
-          network: wallet.network,
-          address: wallet.address,
+    await runWalletVerificationAttempt({
+      inFlight: verificationInFlight,
+      attemptCounter: verificationAttempt,
+      createCorrelationId: () => crypto.randomUUID(),
+      onStart: () => {
+        setVerificationBusy(true);
+        setConnectionPhase("connecting");
+        setVerificationError(null);
+        setVerification(null);
+        connectionStarting.current = !walletIdentity(adapter.getViewModel());
+      },
+      run: async ({ attempt, correlationId, isCurrentAttempt }) => {
+        console.info("ORHEX wallet verification", {
+          correlationId,
+          stage: "connection_started",
         });
-      if (!isCurrentWallet()) return;
-      if (
-        challenge.chain !== "sui" ||
-        challenge.network !== wallet.network ||
-        canonicalWalletAddress(challenge.address) !==
-          canonicalWalletAddress(wallet.address) ||
-        !Number.isFinite(Date.parse(challenge.expires_at)) ||
-        Date.parse(challenge.expires_at) <= Date.now() ||
-        !/^[A-Za-z0-9+/]+={0,2}$/.test(challenge.message)
-      ) {
-        throw new Error("The verification challenge is invalid or expired. Request a new one.");
-      }
-      const message = Uint8Array.from(
-        atob(challenge.message),
-        (character) => character.charCodeAt(0),
-      );
-      const signature = await wallet.signPersonalMessage(message);
-      if (!isCurrentWallet()) return;
-      const result = await submitWalletVerification({
-        challenge_id: challenge.challenge_id,
-        signature,
-      });
-      if (!isCurrentWallet()) return;
-      if (
-        !result.verified ||
-        result.chain !== "sui" ||
-        result.network !== wallet.network ||
-        canonicalWalletAddress(result.address) !==
-          canonicalWalletAddress(wallet.address)
-      ) {
-        throw new Error("The wallet signature did not verify for this account and network.");
-      }
-      setVerification(result);
+        let expectedAddress: string | null = null;
+        let expectedNetwork = "";
+        const isCurrentWallet = () => {
+          const current = adapter.getViewModel();
+          return (
+            verificationAttempt.current === attempt &&
+            current.status === "connected" &&
+            current.network === expectedNetwork &&
+            canonicalWalletAddress(current.address) === expectedAddress
+          );
+        };
+
+        await adapter.connect({ silent: false });
+        const connected = completeWalletConnectionForCurrentAttempt({
+          isCurrentAttempt,
+          onConnected: () => {
+            connectionStarting.current = false;
+          },
+        });
+        if (!connected) {
+          reportWalletDiagnostic(correlationId, {
+            stage: "wallet_attempt_invalidated",
+            after: "connection_response",
+            current_attempt: false,
+          });
+          return;
+        }
+        const connectedWallet = adapter.getViewModel();
+        if (connectedWallet.status !== "connected" || !connectedWallet.address) {
+          throw new Error(connectedWallet.error || "The Sui wallet did not return a connected account.");
+        }
+        expectedAddress = canonicalWalletAddress(connectedWallet.address);
+        expectedNetwork = connectedWallet.network;
+        if (!expectedAddress || verificationAttempt.current !== attempt) {
+          throw new Error("The wallet account changed during connection. Connect again to retry.");
+        }
+
+        const result = await completeWalletVerification({
+          address: connectedWallet.address,
+          network: expectedNetwork,
+          isCurrentWallet,
+          requestChallenge: requestWalletVerificationChallenge,
+          signPersonalMessage: (message, onDiagnostic) =>
+            adapter.signPersonalMessage(message, onDiagnostic),
+          submitVerification: submitWalletVerification,
+          correlationId,
+          onPhase: (phase) => {
+            setConnectionPhase(phase);
+            console.info("ORHEX wallet verification", {
+              correlationId,
+              stage: phase,
+            });
+          },
+          onDiagnostic: (event) => reportWalletDiagnostic(correlationId, event),
+        });
+        if (!result) return;
+        setVerification(result);
+        setConnectionPhase("idle");
+        console.info("ORHEX wallet verification", {
+          correlationId,
+          stage: "verified",
+        });
+      },
+      onFailure: async ({ correlationId, reason, isCurrentAttempt }) => {
+        if (!isCurrentAttempt()) return;
+        connectionStarting.current = false;
+        console.warn("ORHEX wallet verification", {
+          correlationId,
+          stage: "failed",
+          status: reason instanceof ApiError ? reason.status : null,
+          code: reason instanceof ApiError ? reason.code : null,
+        });
+        setVerification(null);
+        setConnectionPhase("failed");
+        if (correlationId) {
+          setVerificationError(verificationErrorMessage(reason));
+          await completeWalletDisconnectForCurrentAttempt({
+            isCurrentAttempt,
+            disconnect: () => adapter.disconnect(),
+            onDisconnectStarted: () => {
+              intentionalDisconnect.current = true;
+            },
+            onDisconnected: () => {
+              activeWalletIdentity.current = null;
+            },
+            onDisconnectFinished: () => {
+              intentionalDisconnect.current = false;
+            },
+          });
+        } else {
+          setVerificationError("Could not start a secure wallet connection. Please retry.");
+          return new Error("Could not start a secure wallet connection. Please retry.");
+        }
+      },
+      onFinally: (attempt) => {
+        if (verificationAttempt.current === attempt) {
+          setVerificationBusy(false);
+        }
+      },
+    });
+  }, [adapter, visitorIdentityId]);
+
+  const disconnect = useCallback(async () => {
+    verificationAttempt.current += 1;
+    verificationRequest.current += 1;
+    verificationInFlight.current = false;
+    setVerification(null);
+    setVerificationBusy(false);
+    setConnectionPhase("idle");
+    setVerificationError(null);
+    let revokeError: unknown = null;
+    try {
+      await revokeVerifiedWallet();
     } catch (reason) {
-      if (verificationAttempt.current !== attempt) return;
-      setVerificationError(verificationErrorMessage(reason));
-      throw reason;
+      revokeError = reason;
     } finally {
-      if (verificationAttempt.current === attempt) {
-        verificationInFlight.current = false;
-        setVerificationBusy(false);
+      intentionalDisconnect.current = true;
+      try {
+        await adapter.disconnect();
+        activeWalletIdentity.current = null;
+      } finally {
+        intentionalDisconnect.current = false;
       }
     }
-  }, [adapter, visitorIdentityId, wallet]);
+    if (revokeError) {
+      const message = verificationErrorMessage(revokeError);
+      setVerificationError(`Wallet disconnected locally, but server revocation failed: ${message}`);
+      throw revokeError;
+    }
+  }, [adapter]);
 
   const verified =
     wallet.status === "connected" &&
@@ -251,28 +362,45 @@ export function WalletConnectionProvider({ children }: { children: ReactNode }) 
     verification.network === wallet.network &&
     canonicalWalletAddress(verification.address) ===
       canonicalWalletAddress(wallet.address);
+  const exposedStatus = verified
+    ? "connected"
+    : verificationBusy
+    ? "connecting"
+    : connectionPhase === "failed" || wallet.status === "error"
+      ? "error"
+      : "disconnected";
+  const exposedAddress = verified ? wallet.address : null;
 
   const value = useMemo<WalletConnectionState>(
     () => ({
-      ...wallet,
-      shortAddress: wallet.address ? formatAddress(wallet.address) : null,
-      verified,
-      verifiedAddress: verified ? verification?.address ?? null : null,
-      verificationAvailable: Boolean(visitorIdentityId),
-      verificationLoading,
-      verificationBusy,
-      verificationError,
-      verify,
+    ...wallet,
+    status: exposedStatus,
+    address: exposedAddress,
+    error: verificationError || wallet.error,
+    shortAddress: exposedAddress ? formatAddress(exposedAddress) : null,
+    verified,
+    verifiedAddress: verified ? verification?.address ?? null : null,
+    verificationAvailable: Boolean(visitorIdentityId),
+    verificationLoading,
+    verificationBusy,
+    verificationError,
+    connectionPhase,
+    connect,
+    disconnect,
     }),
     [
-      verification?.address,
-      verificationBusy,
-      verificationError,
-      verificationLoading,
-      visitorIdentityId,
-      verify,
-      verified,
-      wallet,
+    connect,
+    connectionPhase,
+    disconnect,
+    exposedAddress,
+    exposedStatus,
+    verification?.address,
+    verificationBusy,
+    verificationError,
+    verificationLoading,
+    visitorIdentityId,
+    verified,
+    wallet,
     ],
   );
 

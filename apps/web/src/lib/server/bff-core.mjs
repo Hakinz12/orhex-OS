@@ -180,6 +180,7 @@ export async function callBackend(
     body,
     query,
     origin,
+    correlationId,
     env = process.env,
     fetchImpl = globalThis.fetch.bind(globalThis),
   } = {},
@@ -193,6 +194,14 @@ export async function callBackend(
     (isWalletOriginBoundRequest &&
       (typeof origin !== "string" || !origin)) ||
     (origin !== undefined && !isWalletOriginBoundRequest)
+  ) {
+    return { kind: "rejected" };
+  }
+  if (
+    correlationId !== undefined &&
+    (!isWalletOriginBoundRequest ||
+      typeof correlationId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(correlationId))
   ) {
     return { kind: "rejected" };
   }
@@ -233,6 +242,7 @@ export async function callBackend(
     if (token) headers.set("Authorization", `Bearer ${token}`);
     if (body !== undefined) headers.set("Content-Type", "application/json");
     if (origin !== undefined) headers.set("Origin", origin);
+    if (correlationId !== undefined) headers.set("X-ORHEX-Correlation-ID", correlationId);
     const response = await backendFetch(`${base}${path}${search}`, {
       method,
       headers,

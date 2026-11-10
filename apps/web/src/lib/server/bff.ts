@@ -15,6 +15,7 @@ import {
   visitorCookieName,
   validateSuiWalletAddress,
 } from "./bff-core.mjs";
+import { mapWalletVerificationError } from "../wallet/verification-errors.mjs";
 
 type ResponseKind = "status" | "operation" | "recall" | "memory_list";
 
@@ -224,16 +225,29 @@ export async function proxyConversationRequest(
 export async function proxyWalletVerification(
   token: string,
   path: string,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "DELETE",
   responseKind: "status" | "challenge" | "verification",
   body?: Record<string, unknown>,
   origin?: string,
+  correlationId?: string,
 ) {
-  const result = await callBackend(path, { token, method, body, origin });
+  const result = await callBackend(path, { token, method, body, origin, correlationId });
   if (result.kind === "unavailable") {
+    console.error("ORHEX wallet BFF", {
+      correlationId,
+      stage: "backend_transport",
+      status: 503,
+      code: "wallet_service_unavailable",
+    });
     return jsonError(503, "wallet_service_unavailable", "Wallet verification is temporarily unavailable.");
   }
   if (result.kind === "rejected") {
+    console.error("ORHEX wallet BFF", {
+      correlationId,
+      stage: "request_rejected",
+      status: 400,
+      code: "invalid_request",
+    });
     return jsonError(400, "invalid_request", "The wallet verification request is invalid.");
   }
   if (result.response.status === 401) {
@@ -243,23 +257,39 @@ export async function proxyWalletVerification(
     );
   }
   if (!result.response.ok) {
-    const errors: Record<number, { error: string; message: string }> = {
-      403: { error: "wallet_origin_rejected", message: "Wallet verification must be requested by this ORHEX application." },
-      409: { error: "wallet_verification_failed", message: "The challenge expired or could not be verified. Request a new challenge." },
-      422: { error: "invalid_request", message: "The wallet verification request is invalid." },
-      429: { error: "rate_limited", message: "Too many wallet verification requests. Please retry shortly." },
-      503: { error: "wallet_service_unavailable", message: "The wallet verification service is temporarily unavailable." },
+    const backendError = await result.response.clone().json().catch(() => null);
+    const backendCode =
+      backendError &&
+      typeof backendError === "object" &&
+      "error" in backendError &&
+      typeof backendError.error === "string"
+        ? backendError.error
+        : null;
+    const mapped = mapWalletVerificationError(backendCode, result.response.status) ?? {
+      error: "wallet_service_unavailable",
+      status: 503,
+      message: "The wallet verification service is temporarily unavailable.",
     };
-    const mapped = errors[result.response.status] ?? errors[503];
-    return NextResponse.json(mapped, {
-      status: result.response.status in errors ? result.response.status : 503,
+    console.info("ORHEX wallet BFF", {
+      correlationId,
+      stage: "backend_response",
+      status: result.response.status,
+      backendCode,
+      responseCode: mapped.error,
+      categoryPreserved: backendCode === mapped.error,
+    });
+    return NextResponse.json(
+      { error: mapped.error, message: mapped.message },
+      {
+      status: mapped.status,
       headers: {
         "Cache-Control": "no-store",
         ...(result.response.status === 429
           ? { "Retry-After": result.response.headers.get("retry-after") || "60" }
           : {}),
       },
-    });
+      },
+    );
   }
 
   let payload: unknown;
@@ -273,6 +303,14 @@ export async function proxyWalletVerification(
   if (!isRecord(payload)) {
     return jsonError(502, "invalid_backend_response", "The wallet verification service returned an invalid response.");
   }
+  console.info("ORHEX wallet BFF", {
+    correlationId,
+    stage: "backend_response",
+    status: result.response.status,
+    backendCode: "ok",
+    responseCode: "ok",
+    categoryPreserved: true,
+  });
 
   let safePayload: Record<string, unknown> | null = null;
   if (responseKind === "status" || responseKind === "verification") {

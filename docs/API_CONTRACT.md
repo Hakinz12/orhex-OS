@@ -160,6 +160,18 @@ prove ownership; no signature challenge is performed. Tatum credentials stay
 server-side and are never accepted from callers. Response fields are
 ORHEX-normalized, not raw provider JSON.
 
+Verification errors use safe, distinct codes for missing, expired, and consumed
+challenges; signed-message mismatch; wrong signing address; invalid signature
+or encoding; service unavailability; and internal failure. Messages never
+include signatures, challenge nonces, credentials, or stack traces.
+
+The visitor-only wallet routes are `POST /api/v1/wallet/verify-challenge`,
+`POST /api/v1/wallet/verify-signature`, `GET /api/v1/wallet/verified`, and
+`DELETE /api/v1/wallet/verified`. The BFF mirrors these at
+`/api/bff/wallet/challenge`, `/api/bff/wallet/verify`, and
+`/api/bff/wallet/verified`. Disconnect revokes active links and pending
+challenges so an in-flight signature cannot establish a connection afterward.
+
 ### Shared validation and pagination
 
 - Address path values must be `0x`-prefixed hexadecimal strings with 1–64

@@ -40,6 +40,13 @@ export async function POST(request: Request) {
   }
   const origin = request.headers.get("origin");
   if (!origin) return jsonError(403, "cross_origin_request", "A valid application origin is required.");
+  const correlationId = request.headers.get("x-orhex-correlation-id");
+  if (
+    !correlationId ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(correlationId)
+  ) {
+    return jsonError(400, "invalid_request", "The wallet verification request is invalid.");
+  }
   return proxyWalletVerification(
     token,
     "/api/v1/wallet/verify-challenge",
@@ -51,5 +58,6 @@ export async function POST(request: Request) {
       address: body.address,
     },
     origin,
+    correlationId,
   );
 }

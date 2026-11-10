@@ -17,6 +17,16 @@ export interface WalletConnectionViewModel {
   readonly error: string | null;
 }
 
+export interface SignedPersonalMessage {
+  readonly bytes: string;
+  readonly signature: string;
+}
+
+export interface WalletDiagnosticEvent {
+  readonly stage: string;
+  readonly [key: string]: string | boolean | number | null | undefined;
+}
+
 export interface WalletConnectionAdapter {
   readonly chainId: string;
   readonly providerId: string;
@@ -29,7 +39,10 @@ export interface WalletConnectionAdapter {
 
   connect(options?: { silent?: boolean }): Promise<void>;
   disconnect(): Promise<void>;
-  signPersonalMessage(message: Uint8Array): Promise<string>;
+  signPersonalMessage(
+    message: Uint8Array,
+    onDiagnostic?: (event: WalletDiagnosticEvent) => void,
+  ): Promise<SignedPersonalMessage>;
   getActiveAccount(): WalletAccountRecord | null;
   getViewModel(): WalletConnectionViewModel;
   onAccountChange(listener: (account: WalletAccountRecord | null) => void): () => void;

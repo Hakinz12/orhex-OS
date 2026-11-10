@@ -73,6 +73,120 @@ test("visitor session client sends a bodyless POST to the BFF", async () => {
   assert.equal("Content-Type" in observed.init.headers, false);
 });
 
+test("wallet verification API client preserves safe BFF error codes", async () => {
+  const source = await readFile(new URL("../src/lib/api.ts", import.meta.url), "utf8");
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const client = await import(
+    `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`
+  );
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => jsonResponse({
+    error: "wallet_challenge_expired",
+    message: "The wallet challenge expired. Start a new connection attempt.",
+  }, 409);
+  try {
+    await assert.rejects(
+      client.submitWalletVerification({
+        challenge_id: "6f3a5bb8-a199-4d54-bd16-41a2f1845a91",
+        signature: "c2lnbmF0dXJl",
+        signed_message: "bWVzc2FnZQ==",
+      }),
+      (error) =>
+        error instanceof client.ApiError &&
+        error.code === "wallet_challenge_expired" &&
+        error.status === 409,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("wallet verification client serializes Wallet Standard signature fields unchanged", async () => {
+  const source = await readFile(new URL("../src/lib/api.ts", import.meta.url), "utf8");
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const client = await import(
+    `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`
+  );
+  const originalFetch = globalThis.fetch;
+  const payload = {
+    challenge_id: "6f3a5bb8-a199-4d54-bd16-41a2f1845a91",
+    signature: "AAECAwQFBgcICQ==",
+    signed_message: "T1JIRVggU3VpIG93bmVyc2hpcA==",
+    correlation_id: "6f3a5bb8-a199-4d54-bd16-41a2f1845a91",
+  };
+  let observed;
+  globalThis.fetch = async (input, init) => {
+    observed = {
+      url: String(input),
+      body: JSON.parse(init.body),
+      correlationId: init.headers["X-ORHEX-Correlation-ID"],
+    };
+    return jsonResponse({
+      verified: true,
+      chain: "sui",
+      network: "mainnet",
+      address: `0x${"a".repeat(64)}`,
+    });
+  };
+  try {
+    await client.submitWalletVerification(payload);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(observed.url, "/api/bff/wallet/verify");
+  assert.deepEqual(observed.body, {
+    challenge_id: payload.challenge_id,
+    signature: payload.signature,
+    signed_message: payload.signed_message,
+  });
+  assert.equal(observed.correlationId, payload.correlation_id);
+});
+
+test("wallet challenge client sends correlation only as a diagnostic header", async () => {
+  const source = await readFile(new URL("../src/lib/api.ts", import.meta.url), "utf8");
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const client = await import(
+    `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`
+  );
+  const originalFetch = globalThis.fetch;
+  const input = {
+    network: "mainnet",
+    address: `0x${"a".repeat(64)}`,
+    correlationId: "6f3a5bb8-a199-4d54-bd16-41a2f1845a91",
+  };
+  let observed;
+  globalThis.fetch = async (url, init) => {
+    observed = {
+      url: String(url),
+      body: JSON.parse(init.body),
+      correlationId: init.headers["X-ORHEX-Correlation-ID"],
+    };
+    return jsonResponse({
+      challenge_id: "6f3a5bb8-a199-4d54-bd16-41a2f1845a91",
+      purpose: "wallet_link",
+      chain: "sui",
+      network: input.network,
+      address: input.address,
+      message: "bWVzc2FnZQ==",
+      expires_at: new Date().toISOString(),
+    });
+  };
+  try {
+    await client.requestWalletVerificationChallenge(input);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(observed.url, "/api/bff/wallet/challenge");
+  assert.deepEqual(observed.body, { network: input.network, address: input.address });
+  assert.equal(observed.correlationId, input.correlationId);
+});
+
 async function availablePort() {
   const server = createServer();
   await new Promise((resolve, reject) => {

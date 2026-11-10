@@ -18,7 +18,11 @@ const MEMORY_WRITE_TIMEOUT_MS = 170_000;
 const CONVERSATION_TIMEOUT_MS = 45_000;
 
 export class ApiError extends Error {
-  constructor(message: string, public readonly status: number) {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly code: string | null = null,
+  ) {
     super(message);
     this.name = "ApiError";
   }
@@ -61,6 +65,7 @@ async function requestJson<T>(
     throw new ApiError(
       typeof payload.message === "string" ? payload.message : "The request could not be completed.",
       response.status,
+      typeof payload.error === "string" ? payload.error : null,
     );
   }
   return payload as T;
@@ -77,21 +82,34 @@ export function getVerifiedWallet(): Promise<VerifiedWalletStatus> {
 export function requestWalletVerificationChallenge(input: {
   network: string;
   address: string;
+  correlationId: string;
 }): Promise<WalletVerificationChallenge> {
   return requestJson("/api/bff/wallet/challenge", {
     method: "POST",
-    body: JSON.stringify(input),
+    body: JSON.stringify({ network: input.network, address: input.address }),
+    headers: { "X-ORHEX-Correlation-ID": input.correlationId },
   });
 }
 
 export function submitWalletVerification(input: {
   challenge_id: string;
   signature: string;
+  signed_message: string;
+  correlation_id: string;
 }): Promise<VerifiedWalletStatus> {
   return requestJson("/api/bff/wallet/verify", {
     method: "POST",
-    body: JSON.stringify(input),
+    body: JSON.stringify({
+      challenge_id: input.challenge_id,
+      signature: input.signature,
+      signed_message: input.signed_message,
+    }),
+    headers: { "X-ORHEX-Correlation-ID": input.correlation_id },
   });
+}
+
+export function revokeVerifiedWallet(): Promise<{ verified: false }> {
+  return requestJson("/api/bff/wallet/verified", { method: "DELETE" });
 }
 
 export function createSession(token: string): Promise<SessionStatus> {

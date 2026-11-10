@@ -46,7 +46,7 @@ ORHEX OS is built as a clean, decoupled **modular monolith**:
 2. **Asynchronous Truth:** Walrus writes transition through `queued -> confirmed -> failed`. The UI never claims persistence until verified by Walrus.
 3. **Strict Credential Isolation:** All Walrus Ed25519 delegate keys and Tatum API credentials reside strictly on the FastAPI backend.
 4. **Explainable Anticipation:** Every proactive recommendation cites its exact memory ID or live data source.
-5. **Read-Only On-Chain Data:** Tatum Sui access is strictly read-only; no private keys or signing capabilities are requested.
+5. **Read-Only On-Chain Data:** Tatum Sui access is strictly read-only. Connecting a wallet includes one explicit personal-message ownership signature; ORHEX never requests private keys, seed phrases, or blockchain transactions.
 
 ---
 
