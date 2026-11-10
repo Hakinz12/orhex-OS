@@ -123,7 +123,7 @@ export default function SuiPage() {
   useEffect(() => () => controller.dispose(), [controller]);
 
   const walletStatus = connected
-    ? "Connected"
+    ? "Connected and verified"
     : wallet.status === "connecting"
       ? "Connecting"
       : wallet.status === "error"
@@ -135,7 +135,7 @@ export default function SuiPage() {
       <PageHeading
         eyebrow="Sui · Read-only intelligence"
         title="Your Sui wallet, in context."
-        description="Review public token balances and owned objects. ORHEX never requests signing or transaction approval here."
+        description="Review public token balances and owned objects after verifying wallet ownership. ORHEX never requests transaction approval."
         action={connected ? (
           <button
             type="button"
@@ -164,7 +164,7 @@ export default function SuiPage() {
                 </p>
               ) : (
                 <p className="mt-2 max-w-xl text-[12px] leading-5 text-[#8796a5]">
-                  Connect your existing Sui wallet to view public chain data.
+                  Connect and verify your existing Sui wallet to view its public chain data.
                 </p>
               )}
             </div>
@@ -225,7 +225,7 @@ export default function SuiPage() {
           <ShieldCheck className="h-8 w-8 text-[#8fa6b9]" />
           <h2 className="mt-4 text-[14px] font-semibold text-[#dfe7ed]">Read-only by design</h2>
           <p className="mt-2 max-w-md text-[12px] leading-6 text-[#8795a3]">
-            A connected public address lets ORHEX request public Sui data. It does not prove ownership, and no wallet signature is requested.
+            Wallet ownership is verified with one explicit message-signing request during connection. ORHEX never requests a blockchain transaction.
           </p>
         </section>
       ) : (

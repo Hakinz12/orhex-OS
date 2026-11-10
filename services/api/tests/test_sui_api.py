@@ -16,7 +16,12 @@ from app.core.auth import provision_user
 from app.core.database import Base, _enable_sqlite_foreign_keys, get_db
 from app.core.rate_limit import SensitiveEndpointRateLimiter
 from app.main import app
-from app.models.domain import AnonymousVisitorCredential, AnonymousVisitorIdentity, User
+from app.models.domain import (
+    AnonymousVisitorCredential,
+    AnonymousVisitorIdentity,
+    User,
+    WalletAssociation,
+)
 from app.models.schemas import (
     SuiCoinBalance,
     SuiOwnedObjectsResponse,
@@ -47,6 +52,9 @@ async def api_harness():
             yield session
 
     app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[sui_api.require_verified_wallet_address] = (
+        lambda address: None
+    )
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -55,6 +63,7 @@ async def api_harness():
             yield SimpleNamespace(client=client, factory=session_factory)
     finally:
         app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(sui_api.require_verified_wallet_address, None)
         await engine.dispose()
 
 
@@ -404,9 +413,15 @@ async def test_sui_api_requires_authentication_and_validates_address_and_paginat
     api_harness, monkeypatch
 ):
     monkeypatch.setattr(sui_api._sui_adapter, "api_key", "unit-test-tatum-key")
-    unauthorized = await api_harness.client.get(
-        f"/api/v1/sui/wallet/{ADDRESS}/balances"
+    test_override = app.dependency_overrides.pop(
+        sui_api.require_verified_wallet_address
     )
+    try:
+        unauthorized = await api_harness.client.get(
+            f"/api/v1/sui/wallet/{ADDRESS}/balances"
+        )
+    finally:
+        app.dependency_overrides[sui_api.require_verified_wallet_address] = test_override
     assert unauthorized.status_code == 401
 
     headers = await provision_bearer(api_harness)
@@ -574,6 +589,7 @@ async def test_sui_api_accepts_visitor_credentials_and_rejects_malformed_visitor
     )
     assert response.status_code == 200
 
+    app.dependency_overrides.pop(sui_api.require_verified_wallet_address)
     bad = await api_harness.client.get(
         f"/api/v1/sui/wallet/{ADDRESS}/balances",
         headers={"Authorization": "Bearer not-a-visitor-token"},
@@ -618,21 +634,25 @@ async def test_visitor_sui_reads_preserve_owner_and_ignore_client_ownership_clai
 
 
 @pytest.mark.asyncio
-async def test_pat_can_read_both_sui_resources(api_harness, monkeypatch):
+async def test_pat_cannot_read_verified_wallet_resources(api_harness, monkeypatch):
     headers = await provision_bearer(api_harness)
     install_api_provider(monkeypatch)
-
-    balances = await api_harness.client.get(
-        f"/api/v1/sui/wallet/{ADDRESS}/balances",
-        headers=headers,
+    test_override = app.dependency_overrides.pop(
+        sui_api.require_verified_wallet_address
     )
-    objects = await api_harness.client.get(
-        f"/api/v1/sui/wallet/{ADDRESS}/objects",
-        headers=headers,
-    )
-
-    assert balances.status_code == 200
-    assert objects.status_code == 200
+    try:
+        balances = await api_harness.client.get(
+            f"/api/v1/sui/wallet/{ADDRESS}/balances",
+            headers=headers,
+        )
+        objects = await api_harness.client.get(
+            f"/api/v1/sui/wallet/{ADDRESS}/objects",
+            headers=headers,
+        )
+    finally:
+        app.dependency_overrides[sui_api.require_verified_wallet_address] = test_override
+    assert balances.status_code == 401
+    assert objects.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -664,6 +684,54 @@ async def test_pat_and_visitor_credentials_do_not_cross_authenticate(api_harness
 
 
 @pytest.mark.asyncio
+async def test_wallet_data_requires_the_exact_verified_visitor_wallet(api_harness, monkeypatch):
+    issue = await provision_visitor_issue(api_harness)
+    install_api_provider(monkeypatch)
+    test_override = app.dependency_overrides.pop(
+        sui_api.require_verified_wallet_address
+    )
+    try:
+        paths = [
+            f"/api/v1/sui/wallet/{ADDRESS}/balances",
+            f"/api/v1/sui/wallet/{ADDRESS}/objects",
+            f"/api/v1/sui/intelligence/{ADDRESS}",
+        ]
+        for path in paths:
+            unverified = await api_harness.client.get(
+                path,
+                headers={"Authorization": f"Bearer {issue.credential}"},
+            )
+            assert unverified.status_code == 403
+            assert unverified.json()["error"] == "wallet_not_verified"
+
+        async with api_harness.factory() as session:
+            session.add(
+                WalletAssociation(
+                    visitor_identity_id=issue.identity.id,
+                    user_id=issue.user.id,
+                    chain="sui",
+                    network="mainnet",
+                    canonical_address=ADDRESS,
+                )
+            )
+            await session.commit()
+
+        verified = await api_harness.client.get(
+            paths[0],
+            headers={"Authorization": f"Bearer {issue.credential}"},
+        )
+        wrong_address = await api_harness.client.get(
+            f"/api/v1/sui/wallet/0x{'b' * 64}/balances",
+            headers={"Authorization": f"Bearer {issue.credential}"},
+        )
+        assert verified.status_code == 200
+        assert wrong_address.status_code == 403
+        assert wrong_address.json()["error"] == "wallet_address_mismatch"
+    finally:
+        app.dependency_overrides[sui_api.require_verified_wallet_address] = test_override
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("credential_state", ["malformed", "unknown", "expired", "revoked"])
 async def test_sui_rejects_invalid_expired_and_revoked_visitor_credentials(
     api_harness, monkeypatch, credential_state
@@ -692,10 +760,16 @@ async def test_sui_rejects_invalid_expired_and_revoked_visitor_credentials(
             assert await revoke_visitor_credential(session, credential)
 
     install_api_provider(monkeypatch)
-    response = await api_harness.client.get(
-        f"/api/v1/sui/wallet/{ADDRESS}/balances",
-        headers={"Authorization": f"Bearer {credential}"},
+    test_override = app.dependency_overrides.pop(
+        sui_api.require_verified_wallet_address
     )
+    try:
+        response = await api_harness.client.get(
+            f"/api/v1/sui/wallet/{ADDRESS}/balances",
+            headers={"Authorization": f"Bearer {credential}"},
+        )
+    finally:
+        app.dependency_overrides[sui_api.require_verified_wallet_address] = test_override
     assert response.status_code == 401
     assert response.json()["error"] == "unauthenticated"
 

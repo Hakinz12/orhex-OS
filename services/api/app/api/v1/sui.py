@@ -4,13 +4,18 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.tatum.sui_rpc import TatumSuiAdapter, TatumSuiError
-from app.api.dependencies import get_current_memory_user
+from app.api.dependencies import AuthenticatedVisitorContext, get_current_visitor
 from app.core.config import settings
+from app.core.database import get_db
 from app.core.rate_limit import SensitiveEndpointRateLimiter
-from app.models.domain import User
 from app.services.blockchain_intelligence import analyze_wallet
+from app.services.wallet_verification import (
+    normalize_sui_address,
+    resolve_verified_visitor_wallet,
+)
 from app.models.schemas import (
     SuiAddress,
     SuiCursor,
@@ -127,18 +132,46 @@ def _require_provider_configuration() -> None:
         )
 
 
+async def require_verified_wallet_address(
+    address: str,
+    visitor: AuthenticatedVisitorContext = Depends(get_current_visitor),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    association = await resolve_verified_visitor_wallet(
+        db,
+        user_id=visitor.user.id,
+        visitor_identity_id=visitor.identity.id,
+    )
+    if association is None:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "wallet_not_verified",
+                "message": "Connect and verify this Sui wallet before requesting wallet data.",
+            },
+        )
+    if association.canonical_address != normalize_sui_address(address):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "wallet_address_mismatch",
+                "message": "Wallet data is available only for the verified Sui account.",
+            },
+        )
+
+
 @router.get(
     "/wallet/{address}/balances",
     response_model=SuiWalletBalancesResponse,
-    responses={401: {}, 422: {}, 502: {}, 503: {}},
+    responses={401: {}, 403: {}, 422: {}, 502: {}, 503: {}},
 )
 async def get_wallet_balances(
     request: Request,
     address: SuiAddress,
     pagination: SuiPaginationQuery = Depends(_pagination_query),
-    _user: User = Depends(get_current_memory_user),
+    _verified_wallet: None = Depends(require_verified_wallet_address),
 ):
-    """Return one bounded page of public coin balances for a Sui address."""
+    """Return a bounded page of coin balances for the verified visitor wallet."""
     await _enforce_rate_limit(request)
     _require_provider_configuration()
     try:
@@ -155,15 +188,15 @@ async def get_wallet_balances(
 @router.get(
     "/wallet/{address}/objects",
     response_model=SuiOwnedObjectsResponse,
-    responses={401: {}, 422: {}, 502: {}, 503: {}},
+    responses={401: {}, 403: {}, 422: {}, 502: {}, 503: {}},
 )
 async def get_wallet_objects(
     request: Request,
     address: SuiAddress,
     pagination: SuiPaginationQuery = Depends(_pagination_query),
-    _user: User = Depends(get_current_memory_user),
+    _verified_wallet: None = Depends(require_verified_wallet_address),
 ):
-    """Return one bounded page of public objects owned by a Sui address."""
+    """Return a bounded page of objects owned by the verified visitor wallet."""
     await _enforce_rate_limit(request)
     _require_provider_configuration()
     try:
@@ -179,14 +212,14 @@ async def get_wallet_objects(
 
 @router.get(
     "/intelligence/{address}",
-    responses={401: {}, 422: {}, 502: {}, 503: {}},
+    responses={401: {}, 403: {}, 422: {}, 502: {}, 503: {}},
 )
 async def get_wallet_intelligence(
     request: Request,
     address: SuiAddress,
-    _user: User = Depends(get_current_memory_user),
+    _verified_wallet: None = Depends(require_verified_wallet_address),
 ):
-    """Return an explainable, bounded intelligence snapshot for a public Sui wallet."""
+    """Return an intelligence snapshot only for the verified visitor wallet."""
     await _enforce_rate_limit(request)
     _require_provider_configuration()
     results = await asyncio.gather(
