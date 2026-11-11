@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import { AppShell } from "@/components/app-shell";
 import { SessionProvider } from "@/components/session-provider";
 import { WalletConnectionProvider } from "@/lib/wallet/state";
-// @ts-ignore Next.js handles CSS side-effect imports at runtime.
 import "../styles/globals.css";
 
 export const metadata: Metadata = {
