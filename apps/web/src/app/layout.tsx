@@ -2,11 +2,12 @@ import type { Metadata } from "next";
 import { AppShell } from "@/components/app-shell";
 import { SessionProvider } from "@/components/session-provider";
 import { WalletConnectionProvider } from "@/lib/wallet/state";
+// @ts-ignore Next.js handles CSS side-effect imports at runtime.
 import "../styles/globals.css";
 
 export const metadata: Metadata = {
   title: {
-    default: "ORHEX OS — Your World. Understood.",
+    default: "ORHEX OS | Your World. Understood.",
     template: "%s · ORHEX OS",
   },
   description:
@@ -27,11 +28,11 @@ export default function RootLayout({
         >
           Skip to content
         </a>
-        <AppShell>
-          <SessionProvider>
-            <WalletConnectionProvider>{children}</WalletConnectionProvider>
-          </SessionProvider>
-        </AppShell>
+        <SessionProvider>
+          <WalletConnectionProvider>
+            <AppShell>{children}</AppShell>
+          </WalletConnectionProvider>
+        </SessionProvider>
       </body>
     </html>
   );
